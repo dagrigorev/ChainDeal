@@ -1,4 +1,4 @@
-import type { Account, Block, ClusterInfo, Deal, DealPolicy, Metrics, SignedTx, SimConfig, SimSnapshot, Stats, TxRecord, VerifyReport } from './types';
+import type { Account, Block, ClusterInfo, ContractDocument, Deal, DocumentVerification, DealPolicy, Metrics, SignedTx, SimConfig, SimSnapshot, Stats, TxRecord, VerifyReport } from './types';
 
 import { accessToken } from './auth';
 
@@ -68,4 +68,8 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   cluster: () => req<ClusterInfo>('/cluster'),
+  document: (dealId: string) => req<ContractDocument>(`/deals/${dealId}/document`),
+  verifyDocument: (deal: string, hash: string, sig: string) =>
+    req<DocumentVerification>(`/documents/verify?deal=${encodeURIComponent(deal)}&hash=${hash}&sig=${sig}`),
+  attestation: () => req<{ alg: string; key_id: string; public_key: string; chain_id: string }>('/attestation'),
 };

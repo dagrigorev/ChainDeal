@@ -20,3 +20,8 @@ export const classifyDeal = (seller: PartyKind, buyer: PartyKind) => w.classifyD
 export const quoteDeal = (t: DealType, items: LineItem[]): Quote => JSON.parse(w.quoteDeal(t, JSON.stringify(items)));
 export const policies = (): DealPolicy[] => JSON.parse(w.policies());
 export const isAddress = (s: string) => w.isAddress(s);
+/** In-browser checks of a contract document: record hash, market signature, Merkle proofs. */
+export const checkDocument = (doc: unknown): { hash_ok: boolean; signature_ok: boolean; events: { height: number; proof_ok: boolean }[]; number: string } =>
+  JSON.parse(w.checkDocument(JSON.stringify(doc)));
+/** QR code rendered by the Rust wallet (qrcodegen) as an SVG string. */
+export const qrSvg = (text: string): string => w.qrSvg(text);

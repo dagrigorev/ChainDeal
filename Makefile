@@ -6,7 +6,7 @@ DBPASS = $$(cut -d= -f2 deploy/k8s/.secrets/db.env)
 CA := $(CURDIR)/deploy/certs/ca.crt
 
 .PHONY: setup db-forward db-reset backend wasm web seed test \
-	auth-test screenshots k8s-up k8s-cluster k8s-certs k8s-secrets k8s-images k8s-data k8s-bulk k8s-app k8s-status k8s-trust k8s-down
+	auth-test screenshots examples k8s-up k8s-cluster k8s-certs k8s-secrets k8s-images k8s-data k8s-bulk k8s-app k8s-status k8s-trust k8s-down
 TXS ?= 1000000
 
 setup:            ## one-time: wasm target, wasm-pack, npm deps
@@ -40,6 +40,9 @@ seed:             ## demo accounts and deals, via the cluster API
 
 screenshots:      ## regenerate docs/screenshots (needs `make web` + `make seed`; uses local Chrome)
 	NODE_EXTRA_CA_CERTS=$(CA) node frontend/scripts/screenshots.mjs
+
+examples:         ## regenerate docs/examples (contract PDFs RU/US + verification)
+	NODE_EXTRA_CA_CERTS=$(CA) node frontend/scripts/examples.mjs
 
 auth-test:        ## end-to-end OAuth/authorization security checks against the cluster
 	NODE_EXTRA_CA_CERTS=$(CA) node scripts/auth-e2e.mjs
@@ -78,6 +81,7 @@ k8s-secrets:      ## random DB password and admin token (kept if they exist)
 		"AUTH_SEED_CLIENT_SECRET=$$(openssl rand -hex 32)" \
 		"AUTH_BOOTSTRAP_ADMIN_EMAIL=admin@chaindeal.localhost" \
 		"AUTH_BOOTSTRAP_ADMIN_PASSWORD=$$(openssl rand -base64 18 | tr -d '/+=')" > $(K8S)/.secrets/auth.env
+	test -f $(K8S)/.secrets/attest.env || echo "CHAINDEAL_ATTESTATION_KEY=$$(openssl rand -hex 32)" > $(K8S)/.secrets/attest.env
 	test -f $(K8S)/.secrets/seed.env || echo "CHAINDEAL_SEED_SECRET=$$(grep AUTH_SEED_CLIENT_SECRET $(K8S)/.secrets/auth.env | cut -d= -f2)" > $(K8S)/.secrets/seed.env
 	chmod 600 $(K8S)/.secrets/*.env
 

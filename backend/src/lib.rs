@@ -8,5 +8,6 @@ pub mod api;
 pub mod authz;
 pub mod chain;
 pub mod db;
+pub mod documents;
 pub mod sim;
 pub mod synth;

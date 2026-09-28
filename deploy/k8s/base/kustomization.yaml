@@ -25,3 +25,6 @@ secretGenerator:
     envs: [../.secrets/auth.env]
   - name: chaindeal-seed
     envs: [../.secrets/seed.env]
+  # Market attestation key: signs contract documents; identical on every node.
+  - name: chaindeal-attest
+    envs: [../.secrets/attest.env]

@@ -9,6 +9,8 @@ import Accounts, { AccountView } from './pages/Accounts';
 import Dashboard from './pages/Dashboard';
 import DealDetail from './pages/DealDetail';
 import Deals from './pages/Deals';
+import DocumentPage from './pages/Document';
+import Verify from './pages/Verify';
 import Explorer, { BlockView, TxView } from './pages/Explorer';
 import Live from './pages/Live';
 import NewDeal from './pages/NewDeal';
@@ -34,7 +36,9 @@ export default function App() {
 
   let page;
   if (section === 'deals' && a === 'new') page = <NewDeal />;
+  else if (section === 'deals' && a && b === 'document') page = <DocumentPage id={a} />;
   else if (section === 'deals' && a) page = <DealDetail id={a} />;
+  else if (section === 'verify') page = <Verify />;
   else if (section === 'deals') page = <Deals />;
   else if (section === 'explorer' && a === 'block' && b) page = <BlockView id={b} />;
   else if (section === 'explorer' && a === 'tx' && b) page = <TxView hash={b} />;

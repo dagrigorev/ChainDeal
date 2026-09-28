@@ -850,3 +850,95 @@ select.compact { width: auto; padding: 5px 8px; font-size: var(--fs-sm); }
   .topbar { gap: var(--s3); }
   .switcher-name { max-width: 110px; }
 }
+
+/* ==========================================================================
+   Contract documents — paper, not UI: always black on white, serif, print-ready
+   ========================================================================== */
+.doc-toolbar { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.doc-localcheck { font-size: var(--fs-sm); color: var(--verdigris); margin: 0; }
+.doc-links { justify-content: flex-end; margin-bottom: var(--s2); }
+.doc-sheet {
+  position: relative; background: #fff; color: #111; margin: 0 auto; box-shadow: var(--z3);
+  font-family: 'Times New Roman', Times, 'Liberation Serif', serif; font-size: 12.5pt; line-height: 1.45;
+}
+/* ГОСТ Р 7.0.97-2016: A4; поля — левое 20 мм, правое 10 мм, верхнее и нижнее 20 мм. */
+.doc-ru { width: 210mm; min-height: 297mm; padding: 20mm 10mm 20mm 20mm; page: ru-a4; }
+/* US Letter, 1-inch margins. */
+.doc-us { width: 8.5in; min-height: 11in; padding: 1in; page: us-letter; }
+.doc-draft::before {
+  content: attr(data-watermark); position: absolute; top: 110mm; left: 0; right: 0; text-align: center;
+  font-size: 110pt; font-weight: 700; color: rgba(168, 50, 31, 0.08); transform: rotate(-24deg); pointer-events: none;
+}
+.doc-center { text-align: center; }
+.doc-title { font-weight: 700; font-size: 14pt; letter-spacing: 0.04em; margin: 0 0 4pt; }
+.doc-subtitle { font-size: 12pt; font-weight: 400; letter-spacing: 0; margin: 0 0 10pt; }
+.doc-place { display: flex; justify-content: space-between; gap: 12pt; margin: 8pt 0 14pt; }
+.doc-p { margin: 0 0 7pt; text-align: justify; hyphens: auto; }
+.doc-ru .doc-p { text-indent: 1.25cm; }  /* абзацный отступ 1,25 см */
+.doc-h { font-size: 12.5pt; font-weight: 700; margin: 12pt 0 6pt; letter-spacing: 0; color: #111; text-align: center; text-transform: none; }
+.doc-mono { font-family: 'Courier New', Courier, monospace; font-size: 0.82em; }
+.doc-wrap { word-break: break-all; }
+.doc-small { font-size: 9.5pt; margin: 3pt 0; }
+.doc-table { width: 100%; border-collapse: collapse; margin: 4pt 0 10pt; font-size: 11pt; break-inside: auto; }
+.doc-table th, .doc-table td { border: 1px solid #222; padding: 3pt 5pt; vertical-align: top; }
+.doc-table th { font-weight: 700; text-align: center; background: #f2f2f2; }
+.doc-table tr { break-inside: avoid; }
+.doc-table .c { text-align: center; }
+.doc-table .r { text-align: right; white-space: nowrap; }
+.doc-total td { font-weight: 700; }
+.doc-kv td:first-child { width: 60%; }
+.doc-sign { width: 100%; border-collapse: collapse; margin-top: 10pt; break-inside: avoid; }
+.doc-sign td { width: 50%; vertical-align: top; padding: 0 12pt 0 0; }
+.doc-sign p { margin: 5pt 0; }
+.doc-signline { margin-top: 16pt !important; border-top: 1px solid #111; padding-top: 3pt; }
+.doc-pagebreak { break-after: page; height: 18pt; }
+.doc-cert { display: flex; gap: 14pt; margin-top: 18pt; padding: 10pt; border: 3px double #111; break-inside: avoid; }
+.doc-qr { width: 34mm; height: 34mm; flex-shrink: 0; image-rendering: pixelated; }
+.doc-cert-body { min-width: 0; }
+.doc-cert-title { font-weight: 700; margin: 0 0 6pt; letter-spacing: 0.03em; }
+.doc-cert-kv { border-collapse: collapse; font-size: 9.5pt; margin-bottom: 4pt; }
+.doc-cert-kv td { padding: 1pt 8pt 1pt 0; vertical-align: top; }
+.doc-cert-kv td:first-child { white-space: nowrap; color: #444; }
+.doc-disclaimer { margin: 12pt 0 0; font-size: 8.5pt; color: #555; text-align: center; font-style: italic; }
+/* Narrow screens only — the printed page (~816 px wide) must keep the paper layout. */
+@media screen and (max-width: 900px) {
+  .doc-sheet { width: 100%; min-height: 0; padding: 18px; font-size: 11pt; }
+  .doc-cert { flex-direction: column; }
+}
+
+/* Print: only the sheet, on each standard's paper, with numbered pages. */
+@page ru-a4 {
+  size: A4; margin: 20mm 10mm 20mm 20mm;
+  @bottom-center { content: counter(page); font: 10pt 'Times New Roman', serif; }
+}
+@page us-letter {
+  size: letter; margin: 1in;
+  @bottom-center { content: "Page " counter(page) " of " counter(pages); font: 10pt 'Times New Roman', serif; }
+}
+@media print {
+  body { background: #fff; }
+  .topbar, .footer, .toasts, .skip, .no-print { display: none !important; }
+  main { padding: 0 !important; max-width: none; }
+  main > .page { animation: none !important; gap: 0; }
+  .doc-sheet { box-shadow: none; width: auto; min-height: 0; padding: 0; }
+  /* Fixed elements repeat on every printed page, so every page of a draft is marked. */
+  .doc-draft::before { position: fixed; top: 40%; }
+}
+
+/* ---- verification ---- */
+.verify-form { display: flex; gap: var(--s2); }
+.verdict { display: flex; align-items: center; gap: var(--s4); padding: var(--s4) var(--s5); border-radius: var(--r-sheet); border: 2px solid; flex-wrap: wrap; }
+.verdict-valid { border-color: var(--verdigris); background: var(--verdigris-soft); }
+.verdict-invalid { border-color: var(--seal); background: var(--seal-soft); }
+.verdict-superseded { border-color: var(--brass); background: var(--brass-soft); }
+.verdict-seal { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; font-size: 30px; font-weight: 800; border: 3px solid currentColor; flex-shrink: 0; }
+.verdict-valid .verdict-seal { color: var(--verdigris); }
+.verdict-invalid .verdict-seal { color: var(--seal); }
+.verdict-superseded .verdict-seal { color: var(--brass-ink); }
+.verdict-title { font-family: var(--serif); font-size: var(--fs-xl); font-weight: 700; margin: 0; }
+.checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.checks li { display: flex; flex-direction: column; gap: 2px; padding-left: var(--s3); border-left: 3px solid var(--rule); }
+.checks li.ok { border-color: var(--verdigris); }
+.checks li.ok b { color: var(--verdigris); }
+.checks li.bad { border-color: var(--seal); }
+.checks li.bad b { color: var(--seal); }

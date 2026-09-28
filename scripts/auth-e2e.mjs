@@ -252,4 +252,23 @@ check(r.status === 200 || r.status === 401 || r.status === 403, 'outstanding acc
 r = await op.b.form('/oauth/token', { grant_type: 'refresh_token', client_id: 'chaindeal-web' });
 check(r.status === 400, 'deleted account cannot refresh');
 
+console.log('\n9. Contract documents (market attestation)');
+const finalDeal = (await (await fetch(BASE + '/api/deals?limit=1&status=completed')).json())[0];
+const docRes = await (await fetch(`${BASE}/api/deals/${finalDeal.id}/document`)).json();
+check(/^CD-[0-9A-F]{4}(-[0-9A-F]{4}){3}$/.test(docRes.number) && docRes.number.replace(/-/g, '').slice(2) === docRes.hash.slice(0, 16).toUpperCase(),
+  'document number is derived from the record hash');
+check(docRes.record.is_final && docRes.record.events.every((e) => e.proof.length > 0 || e.merkle_root === e.tx_hash), 'final record carries a Merkle proof for every event');
+const vq = (h, sg) => fetch(`${BASE}/api/documents/verify?deal=${finalDeal.id}&hash=${h}&sig=${sg}`).then((x) => x.json());
+let v = await vq(docRes.hash, docRes.attestation.signature);
+check(v.valid === true && v.checks.every((c) => c.ok), 'genuine document verifies (signature, content, block proofs)');
+const flip = (h) => (h[0] === '0' ? '1' : '0') + h.slice(1);
+v = await vq(flip(docRes.hash), docRes.attestation.signature);
+check(v.valid === false && !v.checks[0].ok && !v.checks[1].ok, 'altered document hash is rejected');
+v = await vq(docRes.hash, randomBytes(64).toString('hex'));
+check(v.valid === false && !v.checks[0].ok, 'forged market signature is rejected');
+const again = await (await fetch(`${BASE}/api/deals/${finalDeal.id}/document`)).json();
+check(again.hash === docRes.hash && again.attestation.signature === docRes.attestation.signature, 'final documents are deterministic (same number and signature on re-issue)');
+r = await fetch(`${BASE}/api/documents/verify?deal=${finalDeal.id}&hash=zz&sig=zz`);
+check(r.status === 400, 'malformed verification request is refused');
+
 console.log(`\nAll ${passed} checks passed.`);

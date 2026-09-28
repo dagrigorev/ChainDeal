@@ -125,6 +125,51 @@ pub fn sign_link_challenge(secret_hex: &str, challenge_message: &str) -> Result<
     Ok(serde_json::json!({ "pubkey": hex::encode(key.verifying_key().to_bytes()), "signature": hex::encode(sig.to_bytes()) }).to_string())
 }
 
+/// Independent, in-browser checks of a contract document payload
+/// (`{record, hash, attestation}` from `/api/deals/:id/document`).
+/// Returns JSON: `{hash_ok, signature_ok, events: [{height, proof_ok}], number}`.
+#[wasm_bindgen(js_name = checkDocument)]
+pub fn check_document(doc_json: &str) -> Result<String, JsError> {
+    use chaindeal_core::document::*;
+    let v: serde_json::Value = serde_json::from_str(doc_json).map_err(js_err)?;
+    let record: DealRecord = serde_json::from_value(v["record"].clone()).map_err(js_err)?;
+    let claimed = v["hash"].as_str().unwrap_or_default();
+    let hash = record_hash(&record);
+    let att = &v["attestation"];
+    let signature_ok = verify_attestation(
+        att["public_key"].as_str().unwrap_or_default(),
+        &record.chain_id,
+        claimed,
+        att["signature"].as_str().unwrap_or_default(),
+    );
+    let events: Vec<serde_json::Value> = record
+        .events
+        .iter()
+        .map(|e| serde_json::json!({ "height": e.block_height, "proof_ok": verify_merkle_proof(&e.tx_hash, &e.proof, &e.merkle_root) }))
+        .collect();
+    to_json(&serde_json::json!({ "hash_ok": hash == claimed, "signature_ok": signature_ok, "events": events, "number": document_number(&hash) }))
+}
+
+/// QR code as a standalone SVG (medium error correction, 4-module quiet zone).
+#[wasm_bindgen(js_name = qrSvg)]
+pub fn qr_svg(text: &str) -> Result<String, JsError> {
+    use qrcodegen::{QrCode, QrCodeEcc};
+    let qr = QrCode::encode_text(text, QrCodeEcc::Medium).map_err(|e| JsError::new(&format!("{e:?}")))?;
+    let border = 4;
+    let size = qr.size() + border * 2;
+    let mut path = String::new();
+    for y in 0..qr.size() {
+        for x in 0..qr.size() {
+            if qr.get_module(x, y) {
+                path.push_str(&format!("M{},{}h1v1h-1z", x + border, y + border));
+            }
+        }
+    }
+    Ok(format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="{path}" fill="#000"/></svg>"##
+    ))
+}
+
 #[wasm_bindgen(js_name = isAddress)]
 pub fn is_address(s: &str) -> bool {
     core::is_address(s)

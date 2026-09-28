@@ -21,12 +21,13 @@ Individuals and businesses agree terms, lock value in on-chain custody, and rele
 3. [Quick start](#quick-start)
 4. [Repository layout](#repository-layout)
 5. [How it works: code walkthrough](#how-it-works-code-walkthrough)
-6. [Security model](#security-model)
-7. [Operations](#operations)
-8. [API reference](#api-reference)
-9. [Configuration](#configuration)
-10. [Testing](#testing)
-11. [Limitations](#limitations)
+6. [Contract documents](#contract-documents)
+7. [Security model](#security-model)
+8. [Operations](#operations)
+9. [API reference](#api-reference)
+10. [Configuration](#configuration)
+11. [Testing](#testing)
+12. [Limitations](#limitations)
 
 ---
 
@@ -170,14 +171,17 @@ On the Wallet page choose **Import demo wallets**, sign in, and **Link** each wa
 ## Repository layout
 
 ```
-crates/core/          Shared Rust: types, canonical signing, PoW/Merkle, the escrow contract (+ unit tests)
+crates/core/          Shared Rust: types, canonical signing, PoW/Merkle, the escrow contract,
+                      document.rs: contract records, Merkle proofs, market attestation (+ unit tests)
 crates/authn/         EdDSA JWT issue/verify, JWKS types, wallet-link message (used by auth and backend)
-crates/wallet-wasm/   wasm-bindgen exports: keygen, signing, link proofs, contract quotes, block verification
+crates/wallet-wasm/   wasm-bindgen exports: keygen, signing, link proofs, contract quotes, block verification,
+                      document checks, QR codes
 backend/src/
   main.rs             node bootstrap: connections, leader/bus/producer/simulator tasks, HTTP server
   api.rs              chain REST API + SSE, token authorization, security headers
   authz.rs            access-token verification against the auth service's JWKS
   chain.rs            admission, block production, parallel PoW, leader lease, event bus, metrics, verification
+  documents.rs        contract documents: build the record from the chain, attest, verify
   db.rs               Tarantool client (master + read pool), JSON⇄MessagePack bridge
   sim.rs              live market simulator (leader-only, config shared via Tarantool)
   synth.rs            synthetic economy: agents, catalogs, scenario mix, the deal "director"
@@ -193,11 +197,14 @@ auth/tarantool/init.lua   identity schema: users, wallets, codes, refresh, sessi
 tarantool/init.lua    chain schema, stored procedures, counters, replication, cluster primitives
 frontend/src/
   lib/wasm.ts         typed façade over the WASM wallet
+  lib/docfmt.ts       RU/US amounts in words, dates and numbers for contracts
   lib/auth.tsx        OAuth 2.1 PKCE client (memory tokens, silent refresh)
   lib/store.tsx       app state: wallets, lazy account cache, SSE with watchdog, signed submissions
   components/Bridge.tsx   the Custody Bridge (signature view) + MoneyTrack
-  pages/              Desk, Deals, DealDetail, NewDeal, Live, Explorer, Accounts, Wallet, Account, Admin
+  pages/              Desk, Deals, DealDetail, NewDeal, Live, Explorer, Accounts, Wallet, Account, Admin,
+                      Document (RU/US contract forms), Verify
 frontend/scripts/screenshots.mjs   drives Chrome through the product to produce docs/screenshots
+frontend/scripts/examples.mjs      prints example contracts to PDF and captures verification into docs/examples
 deploy/
   certs.sh            name-constrained local CA + TLS certificate
   nginx/              frontend server config and security headers
@@ -361,6 +368,68 @@ if !owns && !c.has_scope("tx:any") { return Err(forbid("this wallet is not linke
 
 ---
 
+## Contract documents
+
+Every deal can be printed as a **paper contract**: a filled-in purchase agreement that records the result of the deal. It is generated from the ledger, and **only this marketplace can verify it**. Open any deal and choose **Договор · RU** or **Agreement · US**, or go to `#/deals/<id>/document?std=ru|us`. **Print / Save PDF** uses the browser's print engine, with the page size, margins and page numbers set in CSS `@page` rules.
+
+| | Russian standard | US standard |
+|---|---|---|
+| Form | «Договор купли-продажи» per ГОСТ Р 7.0.97-2016 (organisational documents) | Purchase and Sale Agreement, US commercial style |
+| Paper | A4, margins 20 / 10 / 20 / 20 mm, 1.25 cm paragraph indent, page number at the bottom | Letter, 1″ margins, "Page N of M" |
+| Structure | Preamble, 1. Предмет договора … 8. Заключительные положения, «Реквизиты и подписи сторон», «Акт об исполнении договора», «Отметка о регистрации» | Recitals ("WHEREAS …"), numbered sections, E-SIGN / UETA clause, signature blocks, Settlement Statement, Certificate of Record |
+| Amounts and dates | «348,99 DEAL (Триста сорок восемь DEAL 99 центов)», «28» сентября 2026 г. | "Three Hundred Forty-Eight and 99/100 DEAL (348.99 DEAL)", September 28, 2026 |
+| Signatures | «ЭП:» plus the party's transaction hash; М.П. for legal entities | "/s/" plus the party's transaction hash |
+
+Both forms carry the same content: the parties and their kind (individual or business), the items, the deal type and its rules (fee, bond, windows, arbiter), and every event with its block. The settlement shows who received what, and a **Certificate of Record** has the document number, record hash, market signature and a QR code that opens the verification page. A deal that is still open prints with a **ПРОЕКТ / DRAFT** watermark on every page.
+
+### Examples
+
+Generated from the seeded cluster by `make examples` (see [docs/examples](docs/examples)):
+
+| Scenario | RU · A4 | US · Letter |
+|---|---|---|
+| C2C: private sale, completed | [PDF](docs/examples/c2c-completed-ru.pdf) | [PDF](docs/examples/c2c-completed-us.pdf) |
+| B2B: disputed, arbiter split 40 / 60 | [PDF](docs/examples/b2b-dispute-resolved-ru.pdf) | [PDF](docs/examples/b2b-dispute-resolved-us.pdf) |
+| B2B: seller default, refund and bond forfeited | [PDF](docs/examples/b2b-seller-default-ru.pdf) | [PDF](docs/examples/b2b-seller-default-us.pdf) |
+| B2C: open deal, draft | [PDF](docs/examples/b2c-open-draft-ru.pdf) | — |
+
+| Договор (RU, first page) | Agreement (US, first page) |
+|---|---|
+| ![Russian contract](docs/examples/b2b-dispute-resolved-ru.png) | ![US agreement](docs/examples/b2b-dispute-resolved-us.png) |
+
+| Verification: authentic | Verification: one hex digit changed |
+|---|---|
+| ![Authentic document](docs/examples/verify-authentic.png) | ![Tampered document](docs/examples/verify-tampered.png) |
+
+The raw data behind one example: [the issued document](docs/examples/b2b-dispute-resolved.document.json) and [its verification result](docs/examples/b2b-dispute-resolved.verification.json).
+
+### Trust model
+
+```
+DealRecord (canonical JSON: parties, items, rules, settlement, events + block height/hash/Merkle proof, chain_id = genesis hash)
+   │ SHA-256
+   ▼
+record hash ──▶ document number  CD-XXXX-XXXX-XXXX-XXXX   (first 64 bits of the hash)
+   │
+   ▼  Ed25519, market attestation key (Kubernetes Secret, shared by all API nodes)
+signature over "ChainDeal document attestation v1\nchain: <chain_id>\nrecord: <hash>"
+   │
+   ▼
+QR / link  https://chaindeal.localhost/#/verify?deal=…&hash=…&sig=…
+```
+
+- **Only this market can verify.** The signature is bound to this ledger's genesis hash and made with a key that never leaves the cluster. The same deal id on another ledger, or a document signed by anyone else, fails.
+- **The paper cannot be edited.** Verification **rebuilds the record from the chain** and compares hashes. Change a name, an amount or a date and the hash no longer matches. Change the hash too and the signature fails.
+- **Every event is anchored.** Each event carries a Merkle inclusion proof for its transaction. The verifier recomputes it against the block's Merkle root and re-hashes the block header.
+- **Two independent checks.** The server runs the checks in [backend/src/documents.rs](backend/src/documents.rs). The verify page then repeats them **in the browser**, with the same Rust code compiled to WASM (`checkDocument` in [crates/wallet-wasm](crates/wallet-wasm/src/lib.rs)), against the market's published key from `/api/attestation`.
+- **Open deals.** A document issued before the deal ended still passes the signature check, but is reported as **superseded** once the deal moves on. Final documents are deterministic: re-issuing gives the same number and signature.
+
+The code: record types, hashing, Merkle proofs and attestation live in [crates/core/src/document.rs](crates/core/src/document.rs). Building and verifying a record against Tarantool is in [backend/src/documents.rs](backend/src/documents.rs). The forms are in [frontend/src/pages/Document.tsx](frontend/src/pages/Document.tsx), with number-to-words and date formatting for both locales in [lib/docfmt.ts](frontend/src/lib/docfmt.ts). The verification page is [Verify.tsx](frontend/src/pages/Verify.tsx).
+
+> The contracts are a demonstration of document formats, not legal advice. The currency is the demo token DEAL.
+
+---
+
 ## Security model
 
 | Area | Measures |
@@ -374,6 +443,7 @@ if !owns && !c.has_scope("tx:any") { return Err(forbid("this wallet is not linke
 | **Authorization** | Scopes derived from roles (`user`, `operator`, `admin`). Admin actions re-check roles in the database. Role changes, suspension and deletion sign the user out everywhere. Transactions must come from **linked** wallets |
 | **Cluster** | `restricted` Pod Security in both namespaces. Non-root, read-only root filesystems, all capabilities dropped, no service-account tokens. **NetworkPolicies**: default deny; only the API and bulk job reach the chain DB; only auth reaches `auth-db` |
 | **Secrets** | Randomly generated into `deploy/k8s/.secrets/` (mode 600, gitignored) and mounted as Kubernetes Secrets. Demo private keys are stripped from images |
+| **Documents** | Contracts are signed with an Ed25519 attestation key held in a Kubernetes Secret and bound to the ledger's genesis hash. Verification rebuilds the record from the chain, so an edited or forged document is rejected |
 | **Audit** | Logins, failures, lockouts, token reuse, wallet links, password and admin changes, visible on the Admin page |
 
 ---
@@ -391,7 +461,8 @@ if !owns && !c.has_scope("tx:any") { return Err(forbid("this wallet is not linke
 | `make db-reset` | Wipe the chain in-cluster and reload the history (`TXS=…`) |
 | `make db-forward` / `make backend` | Port-forward the Tarantool master and run an extra node locally (it joins as a follower) |
 | `make web` / `make seed` / `make screenshots` | Dev UI, demo data, documentation screenshots |
-| `make test` / `make auth-test` | Unit tests + type check / 61 live security checks |
+| `make examples` | Regenerate the example contracts (RU/US PDFs, previews) and verification screenshots in `docs/examples` |
+| `make test` / `make auth-test` | Unit tests + type check / 68 live security checks |
 
 Try a failover: open the Live page, then `kubectl -n chaindeal delete pod <leader>`. The Cluster panel shows another node take over within about 1.3 s, and blocks keep coming.
 
@@ -412,6 +483,9 @@ Chain API (`/api`, served by any backend pod):
 | GET | `/api/chain/verify?from=&count=&prev=` | verify a block range (≤500) |
 | GET / POST | `/api/sim` | simulator state / change (**Bearer**, `sim:control`, operator role) |
 | GET | `/api/cluster` | API nodes, leader, Tarantool instances and replication lag |
+| GET | `/api/deals/:id/document` | the deal as a contract record, with its number, hash, market attestation and verify link |
+| GET | `/api/documents/verify?deal=&hash=&sig=` | verify a document against the ledger: signature, content, block proofs |
+| GET | `/api/attestation` | the market's attestation public key, key id and chain id |
 | GET | `/api/events` | SSE: `pending`, `refused`, `rejected`, `block` (with deal transitions), `leader` |
 
 Identity API (`/oauth`, `/.well-known`, served by the auth service):
@@ -437,6 +511,7 @@ Identity API (`/oauth`, `/.well-known`, served by the auth service):
 | `CHAINDEAL_SIM`, `CHAINDEAL_SIM_RATE`, `CHAINDEAL_SIM_PRESSURE`, `CHAINDEAL_SIM_AGENTS` | `on`, `10`, `1`, `6000` | backend simulator |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER` | `http://auth:8080/oauth/jwks`, `https://chaindeal.localhost` | backend token verification |
 | `CHAINDEAL_AUTH` | `on` (`off` = unprotected, loud warning) | backend |
+| `CHAINDEAL_ATTESTATION_KEY` | Secret (random per node if unset, with a warning) | backend document signing (32-byte hex seed) |
 | `CHAINDEAL_CORS_ORIGINS` | unset (same-origin only) | backend |
 | `AUTH_DB_ADDR`, `AUTH_SIGNING_KEY`, `AUTH_DATA_KEY`, `AUTH_INDEX_KEY` | Secret | auth |
 | `AUTH_WEB_REDIRECTS`, `AUTH_SEED_CLIENT_SECRET`, `AUTH_BOOTSTRAP_ADMIN_*` | Deployment / Secret | auth |
@@ -446,15 +521,17 @@ Identity API (`/oauth`, `/.well-known`, served by the auth service):
 
 ## Testing
 
-- **`make test`** runs 16 Rust unit tests and the TypeScript type check:
-  - **Contract (12):** every lifecycle path, including the failure model, and conservation of supply.
+- **`make test`** runs 18 Rust unit tests and the TypeScript type check:
+  - **Chain core (12):** every lifecycle path, including the failure model, conservation of supply, hashing, signatures and Merkle roots.
+  - **Documents (2):** Merkle inclusion proofs for every tree size and index, and an attestation bound to both chain and record.
   - **JWT (1):** tampering, `alg:none`, unknown keys, expiry and audience.
   - **Auth crypto (3):** the RFC 7636 PKCE vector, record-bound encryption and Argon2id.
-- **`make auth-test`** runs 61 end-to-end checks against the live cluster over TLS:
+- **`make auth-test`** runs 68 end-to-end checks against the live cluster over TLS:
   - open redirects, PKCE `plain`, CSRF and code replay;
   - cookie attributes, token reuse and brute-force lockout;
   - no account enumeration, wallet-proof forgery, and role enforcement;
-  - admin self-lockout protection, account deletion and the audit trail.
+  - admin self-lockout protection, account deletion and the audit trail;
+  - contract documents: number derivation, genuine, altered and forged documents, deterministic re-issue.
 - **`make seed`** is also an end-to-end test of the contract and the machine OAuth client.
 - **Verify entire chain** on the Ledger page re-derives every hash, link, Merkle root and signature.
 

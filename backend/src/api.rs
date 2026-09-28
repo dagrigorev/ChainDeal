@@ -18,6 +18,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::authz::{forbid, Authz, Denied};
 use crate::chain::{Node, SubmitError};
+use crate::documents::Documents;
 use crate::sim::{Sim, SimPatch};
 
 #[derive(Clone)]
@@ -26,6 +27,8 @@ pub struct AppState {
     pub sim: Arc<Sim>,
     /// Access-token verification; `None` only when explicitly disabled for local dev.
     pub authz: Option<Arc<Authz>>,
+    /// Contract-document issuance and verification (market attestation key).
+    pub docs: Arc<Documents>,
 }
 
 impl From<Denied> for ApiError {
@@ -88,6 +91,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/chain/verify", get(verify_chain))
         .route("/api/sim", get(sim_get).post(sim_patch))
         .route("/api/cluster", get(cluster))
+        .route("/api/deals/:id/document", get(deal_document))
+        .route("/api/documents/verify", get(verify_document))
+        .route("/api/attestation", get(attestation))
         .route("/api/events", get(events))
         .with_state(state)
         // Defence in depth for API responses (the UI's own headers come from nginx).
@@ -260,6 +266,36 @@ struct VerifyQuery {
 }
 
 /// Verifies a range of blocks; the UI walks the whole chain in chunks.
+/// The attested contract document for a deal (record + market signature).
+async fn deal_document(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    match s.docs.issue(&s.node.db.reader(), &id).await? {
+        Some(doc) => Ok(Json(doc)),
+        None => Err(not_found("deal")),
+    }
+}
+
+#[derive(Deserialize)]
+struct VerifyDoc {
+    deal: String,
+    hash: String,
+    sig: String,
+}
+
+/// Verifies a document against this market's chain and attestation key.
+async fn verify_document(State(s): State<AppState>, Query(q): Query<VerifyDoc>) -> ApiResult {
+    let valid_hex = |v: &str, n: usize| v.len() == n && v.bytes().all(|c| c.is_ascii_hexdigit());
+    if !valid_hex(&q.hash, 64) || !valid_hex(&q.sig, 128) || q.deal.len() > 64 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "malformed verification request".into()));
+    }
+    Ok(Json(s.docs.verify(&s.node.db.reader(), &q.deal, &q.hash.to_lowercase(), &q.sig.to_lowercase()).await?))
+}
+
+/// This market's attestation identity: public key and chain id.
+async fn attestation(State(s): State<AppState>) -> ApiResult {
+    let chain_id = s.docs.chain_id(&s.node.db.reader()).await?;
+    Ok(Json(json!({ "alg": "Ed25519", "key_id": s.docs.key_id, "public_key": s.docs.public_key, "chain_id": chain_id })))
+}
+
 async fn verify_chain(State(s): State<AppState>, Query(q): Query<VerifyQuery>) -> ApiResult {
     let report = s
         .node

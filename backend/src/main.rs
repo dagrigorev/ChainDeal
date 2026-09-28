@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use axum::http::HeaderValue;
-use chaindeal_backend::{api, authz, chain, db, sim};
+use chaindeal_backend::{api, authz, chain, db, documents, sim};
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -69,7 +69,10 @@ async fn main() -> Result<()> {
         tracing::info!("verifying access tokens from {issuer} (keys: {jwks})");
         Some(Arc::new(authz::Authz::new(jwks, issuer)))
     };
-    let mut app = api::router(api::AppState { node: node.clone(), sim, authz });
+    // Market attestation key for contract documents (shared by all nodes via a Secret).
+    let docs = Arc::new(documents::Documents::new(std::env::var("CHAINDEAL_ATTESTATION_KEY").ok().filter(|k| !k.is_empty()))?);
+    tracing::info!(key_id = %docs.key_id, "document attestation key loaded");
+    let mut app = api::router(api::AppState { node: node.clone(), sim, authz, docs });
     // Optionally serve the built frontend (compose image). In Kubernetes nginx serves it.
     if let Ok(dir) = std::env::var("STATIC_DIR") {
         let index = format!("{dir}/index.html");
