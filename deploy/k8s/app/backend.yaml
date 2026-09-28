@@ -1,0 +1,76 @@
+# Stateless API nodes. One wins the leader lease (in Tarantool) and mines
+# blocks + runs the simulator; all serve the API and SSE. Kill the leader and
+# another takes over within ~6s.
+apiVersion: v1
+kind: Service
+metadata: { name: backend }
+spec:
+  selector: { app: backend }
+  ports: [{ name: http, port: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: backend }
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector: { matchLabels: { app: backend } }
+  template:
+    metadata: { labels: { app: backend } }
+    spec:
+      terminationGracePeriodSeconds: 20
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          # Required, not preferred: replicas must land on different nodes.
+          whenUnsatisfiable: DoNotSchedule
+          # Only count nodes this pod can run on (not the tainted control plane)…
+          nodeTaintsPolicy: Honor
+          # …and only pods of the same revision, so rolling updates aren't blocked.
+          matchLabelKeys: [pod-template-hash]
+          labelSelector: { matchLabels: { app: backend } }
+      containers:
+        - name: backend
+          image: chaindeal-backend:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: TARANTOOL_ADDR, value: "tarantool-rw:3301" }
+            - { name: TARANTOOL_READ_ADDR, value: "tarantool-read:3301" }
+            - name: TARANTOOL_PASSWORD
+              valueFrom: { secretKeyRef: { name: chaindeal-db, key: CHAINDEAL_DB_PASSWORD } }
+            # Access tokens are verified against the auth service's published keys.
+            - { name: AUTH_JWKS_URL, value: "http://auth:8080/oauth/jwks" }
+            - { name: AUTH_ISSUER, value: "https://chaindeal.localhost" }
+            - name: CHAINDEAL_NODE_ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: CHAINDEAL_SIM_RATE, value: "10" }
+            - { name: RUST_LOG, value: "info,tower_http=warn" }
+          ports: [{ name: http, containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: backend }
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: backend } }

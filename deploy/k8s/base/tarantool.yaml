@@ -1,0 +1,106 @@
+# Tarantool replica set: tarantool-0 is the writable master, tarantool-1..N are
+# read-only replicas that stream the master's WAL (async replication).
+#
+#   tarantool       headless: stable DNS per pod (tarantool-0.tarantool…) for replication
+#   tarantool-rw    the master only — all writes (admission, blocks, leases, events)
+#   tarantool-read  every instance — read queries are spread across the set
+apiVersion: v1
+kind: Service
+metadata: { name: tarantool, labels: { app: tarantool } }
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: tarantool }
+  ports: [{ name: iproto, port: 3301 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: tarantool-rw }
+spec:
+  selector:
+    app: tarantool
+    statefulset.kubernetes.io/pod-name: tarantool-0
+  ports: [{ name: iproto, port: 3301 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: tarantool-read }
+spec:
+  selector: { app: tarantool }
+  ports: [{ name: iproto, port: 3301 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: tarantool }
+spec:
+  serviceName: tarantool
+  replicas: 2
+  podManagementPolicy: OrderedReady
+  selector: { matchLabels: { app: tarantool } }
+  template:
+    metadata: { labels: { app: tarantool } }
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector: { matchLabels: { app: tarantool } }
+      containers:
+        - name: tarantool
+          image: tarantool/tarantool:3.2
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # Run our init.lua directly (not the image's cluster-config mode).
+              unset TT_INSTANCE_NAME TT_APP_NAME
+              # Every instance except ordinal 0 replicates from the master.
+              if [ "${HOSTNAME##*-}" != "0" ]; then
+                export TT_REPLICATION_SOURCE="tarantool-0.tarantool:3301"
+              fi
+              exec tarantool /opt/chaindeal/init.lua
+          env:
+            - name: CHAINDEAL_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: chaindeal-db, key: CHAINDEAL_DB_PASSWORD } }
+            - { name: TT_MEMTX_MEMORY_MB, value: "2048" }
+          ports: [{ name: iproto, containerPort: 3301 }]
+          startupProbe:
+            exec: { command: [sh, -c, "unset TT_INSTANCE_NAME TT_APP_NAME; exec tarantool /opt/chaindeal/probe.lua"] }
+            periodSeconds: 5
+            failureThreshold: 120 # replicas may need minutes to copy a large snapshot
+          readinessProbe:
+            exec: { command: [sh, -c, "unset TT_INSTANCE_NAME TT_APP_NAME; exec tarantool /opt/chaindeal/probe.lua"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: [sh, -c, "unset TT_INSTANCE_NAME TT_APP_NAME; exec tarantool /opt/chaindeal/probe.lua"] }
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            requests: { cpu: 250m, memory: 1536Mi }
+            limits: { memory: 2560Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/tarantool }
+            - { name: init, mountPath: /opt/chaindeal, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: init
+          configMap: { name: tarantool-init }
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 6Gi } }

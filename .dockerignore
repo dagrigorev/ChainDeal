@@ -1,0 +1,25 @@
+# Keep the Docker build context small and free of secrets.
+.git
+target
+**/node_modules
+frontend/dist
+frontend/src/wasm
+*.tsbuildinfo
+
+# Secrets and keys never enter a build context.
+deploy/certs
+deploy/k8s/.secrets
+deploy/k8s/base/.generated
+**/*.key
+**/*.pem
+**/.env
+**/.env.*
+frontend/public/demo-wallets.json
+scripts/demo-wallets.json
+
+# Not needed to build images.
+docs
+.idea
+.claude
+.vscode
+**/*.log

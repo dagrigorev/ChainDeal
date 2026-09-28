@@ -1,0 +1,46 @@
+# https://chaindeal.localhost — UI from nginx, /api from the node pool,
+# /oauth and /.well-known from the identity service.
+# (*.localhost resolves to 127.0.0.1 with no DNS setup: RFC 6761.)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chaindeal
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [chaindeal.localhost, chaindeal.test]
+      secretName: chaindeal-tls
+  rules:
+    - host: chaindeal.localhost
+      http:
+        paths:
+          - path: /oauth
+            pathType: Prefix
+            backend: { service: { name: auth, port: { number: 8080 } } }
+          - path: /.well-known
+            pathType: Prefix
+            backend: { service: { name: auth, port: { number: 8080 } } }
+          - path: /api
+            pathType: Prefix
+            backend: { service: { name: backend, port: { number: 8080 } } }
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: frontend, port: { number: 8080 } } }
+    - host: chaindeal.test
+      http:
+        paths:
+          - path: /oauth
+            pathType: Prefix
+            backend: { service: { name: auth, port: { number: 8080 } } }
+          - path: /.well-known
+            pathType: Prefix
+            backend: { service: { name: auth, port: { number: 8080 } } }
+          - path: /api
+            pathType: Prefix
+            backend: { service: { name: backend, port: { number: 8080 } } }
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: frontend, port: { number: 8080 } } }

@@ -1,0 +1,126 @@
+# Uses rustup's toolchain (needed for the wasm32 target) ahead of any Homebrew rust.
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+# Tarantool runs only inside the Kubernetes cluster (deploy/k8s). Local tools reach
+# it through a port-forward or through https://chaindeal.localhost.
+DBPASS = $$(cut -d= -f2 deploy/k8s/.secrets/db.env)
+CA := $(CURDIR)/deploy/certs/ca.crt
+
+.PHONY: setup db-forward db-reset backend wasm web seed test \
+	auth-test screenshots k8s-up k8s-cluster k8s-certs k8s-secrets k8s-images k8s-data k8s-bulk k8s-app k8s-status k8s-trust k8s-down
+TXS ?= 1000000
+
+setup:            ## one-time: wasm target, wasm-pack, npm deps
+	rustup target add wasm32-unknown-unknown
+	command -v wasm-pack >/dev/null || cargo install wasm-pack --locked
+	npm --prefix frontend install
+	$(MAKE) wasm
+
+db-forward:       ## expose the cluster's Tarantool master on 127.0.0.1:3301 (for local tools)
+	$(KUBECTL) -n chaindeal port-forward svc/tarantool-rw 3301:3301
+
+db-reset:         ## wipe the cluster's chain and reload TXS historical txs (in-cluster job)
+	$(KUBECTL) -n chaindeal scale deploy/backend --replicas=0
+	$(KUBECTL) -n chaindeal delete statefulset tarantool --wait=true
+	$(KUBECTL) -n chaindeal delete pvc -l app=tarantool --wait=true
+	$(MAKE) k8s-data k8s-bulk
+	$(KUBECTL) -n chaindeal scale deploy/backend --replicas=3
+
+backend:          ## run a node locally against the cluster DB (needs `make db-forward`)
+	TARANTOOL_ADDR=127.0.0.1:3301 TARANTOOL_PASSWORD=$(DBPASS) BIND_ADDR=127.0.0.1:8080 \
+		cargo run --release --bin chaindeal-backend
+
+wasm:             ## compile the Rust wallet to WebAssembly for the UI
+	wasm-pack build crates/wallet-wasm --target web --release --out-dir ../../frontend/src/wasm --out-name chaindeal_wallet
+
+web:              ## React dev server on :5173, proxying /api to the cluster over TLS
+	CHAINDEAL_BACKEND=https://chaindeal.localhost NODE_EXTRA_CA_CERTS=$(CA) npm --prefix frontend run dev
+
+seed:             ## demo accounts and deals, via the cluster API
+	NODE_EXTRA_CA_CERTS=$(CA) CHAINDEAL_SEED_SECRET=$$(cut -d= -f2 $(K8S)/.secrets/seed.env) node scripts/seed.mjs https://chaindeal.localhost
+
+screenshots:      ## regenerate docs/screenshots (needs `make web` + `make seed`; uses local Chrome)
+	NODE_EXTRA_CA_CERTS=$(CA) node frontend/scripts/screenshots.mjs
+
+auth-test:        ## end-to-end OAuth/authorization security checks against the cluster
+	NODE_EXTRA_CA_CERTS=$(CA) node scripts/auth-e2e.mjs
+
+test:             ## unit tests + typecheck
+	cargo test --workspace --exclude chaindeal-wallet
+	cd frontend && npx tsc -b
+
+
+# ---------------------------------------------------------------- Kubernetes
+# Docker Desktop's built-in Kubernetes (Settings → Kubernetes, kind provisioner,
+# 3 nodes). HTTPS at https://chaindeal.localhost.
+CTX ?= docker-desktop
+KUBECTL := kubectl --context $(CTX)
+K8S := deploy/k8s
+KUSTOMIZE := kubectl kustomize --load-restrictor LoadRestrictionsNone
+
+k8s-up: k8s-cluster k8s-certs k8s-secrets k8s-images k8s-data k8s-bulk k8s-app k8s-status  ## everything, incl. 1M-tx history
+
+k8s-cluster:      ## Traefik ingress on Docker Desktop Kubernetes (enable it in Settings first)
+	@$(KUBECTL) get nodes >/dev/null 2>&1 || { echo "Docker Desktop Kubernetes is not running: Settings → Kubernetes → Enable (kind, 3 nodes)"; exit 1; }
+	$(KUBECTL) apply -f $(K8S)/ingress/traefik.yaml
+	$(KUBECTL) -n ingress rollout status deploy/traefik --timeout=180s
+
+k8s-certs:        ## local name-constrained CA + TLS cert for chaindeal.localhost
+	./deploy/certs.sh
+
+k8s-secrets:      ## random DB password and admin token (kept if they exist)
+	mkdir -p $(K8S)/.secrets && chmod 700 $(K8S)/.secrets
+	test -f $(K8S)/.secrets/db.env || echo "CHAINDEAL_DB_PASSWORD=$$(openssl rand -hex 24)" > $(K8S)/.secrets/db.env
+	test -f $(K8S)/.secrets/auth.env || printf '%s\n' \
+		"AUTH_DB_PASSWORD=$$(openssl rand -hex 24)" \
+		"AUTH_SIGNING_KEY=$$(openssl rand -hex 32)" \
+		"AUTH_DATA_KEY=$$(openssl rand -hex 32)" \
+		"AUTH_INDEX_KEY=$$(openssl rand -hex 32)" \
+		"AUTH_SEED_CLIENT_SECRET=$$(openssl rand -hex 32)" \
+		"AUTH_BOOTSTRAP_ADMIN_EMAIL=admin@chaindeal.localhost" \
+		"AUTH_BOOTSTRAP_ADMIN_PASSWORD=$$(openssl rand -base64 18 | tr -d '/+=')" > $(K8S)/.secrets/auth.env
+	test -f $(K8S)/.secrets/seed.env || echo "CHAINDEAL_SEED_SECRET=$$(grep AUTH_SEED_CLIENT_SECRET $(K8S)/.secrets/auth.env | cut -d= -f2)" > $(K8S)/.secrets/seed.env
+	chmod 600 $(K8S)/.secrets/*.env
+
+k8s-images:       ## build backend, auth and frontend images and load them onto every node
+	docker build --target backend -t chaindeal-backend:dev .
+	docker build --target auth -t chaindeal-auth:dev .
+	docker build --target frontend -t chaindeal-frontend:dev .
+	# Docker Desktop's cluster nodes don't see the local image store: import into each node's containerd.
+	for n in $$($(KUBECTL) get nodes -o name | cut -d/ -f2); do \
+		for i in chaindeal-backend:dev chaindeal-auth:dev chaindeal-frontend:dev; do \
+			docker save $$i | docker exec -i $$n ctr -n k8s.io images import --digests - >/dev/null || exit 1; \
+		done; echo "images loaded on $$n"; \
+	done
+
+k8s-data:         ## Tarantool replica set (master + replica)
+	mkdir -p $(K8S)/base/.generated && cp tarantool/init.lua $(K8S)/base/.generated/init.lua && cp auth/tarantool/init.lua $(K8S)/base/.generated/auth-init.lua
+	$(KUSTOMIZE) $(K8S)/base | $(KUBECTL) apply -f -
+	$(KUBECTL) -n chaindeal rollout status statefulset/tarantool --timeout=600s
+	$(KUBECTL) -n chaindeal rollout status statefulset/auth-db --timeout=300s
+
+k8s-bulk:         ## load the 1M-tx history (only into an empty chain)
+	$(KUBECTL) -n chaindeal delete job chaindeal-bulk --ignore-not-found
+	$(KUBECTL) apply -f $(K8S)/jobs/bulk.yaml
+	$(KUBECTL) -n chaindeal wait --for=condition=complete job/chaindeal-bulk --timeout=1200s
+	$(KUBECTL) -n chaindeal logs job/chaindeal-bulk | tail -8
+
+k8s-app:          ## API nodes, UI and ingress
+	$(KUSTOMIZE) $(K8S)/app | $(KUBECTL) apply -f -
+	$(KUBECTL) -n chaindeal rollout restart deploy/backend deploy/auth deploy/frontend
+	$(KUBECTL) -n chaindeal rollout status deploy/auth --timeout=300s
+	$(KUBECTL) -n chaindeal rollout status deploy/backend --timeout=300s
+	$(KUBECTL) -n chaindeal rollout status deploy/frontend --timeout=120s
+
+k8s-status:
+	$(KUBECTL) -n chaindeal get pods -o wide
+	@echo; echo "Open https://chaindeal.localhost  (trust the local CA once: make k8s-trust)"
+	@echo "Bootstrap admin: $$(grep ADMIN_EMAIL $(K8S)/.secrets/auth.env | cut -d= -f2)  password: $$(grep ADMIN_PASSWORD $(K8S)/.secrets/auth.env | cut -d= -f2-)"
+
+k8s-trust:        ## print the one command that trusts the local CA (you run it)
+	@echo "Run this yourself (adds the name-constrained dev CA to your login keychain; macOS will ask to confirm):"
+	@echo "  security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db $(CURDIR)/deploy/certs/ca.crt"
+	@echo "To remove it later:"
+	@echo "  security delete-certificate -c 'ChainDeal Local Dev CA' ~/Library/Keychains/login.keychain-db"
+
+k8s-down:         ## remove ChainDeal from the cluster (data included); the cluster itself stays
+	$(KUBECTL) delete namespace chaindeal ingress --ignore-not-found

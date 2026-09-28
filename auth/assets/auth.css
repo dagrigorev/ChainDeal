@@ -1,0 +1,22 @@
+/* Hosted sign-in pages. Same "Custody" palette as the app; no scripts at all. */
+:root { --paper:#f3efe6; --sheet:#fbf9f4; --rule:#d8cfbd; --ink:#1d1b16; --ink2:#5d574b; --brass:#b58a34; --brass-ink:#74540f; --seal:#a8321f; --seal-soft:#f6e0da; --ok:#2f6b58; color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root { --paper:#15130f; --sheet:#1e1b15; --rule:#3b3529; --ink:#efe9dc; --ink2:#a9a190; --brass:#c99b43; --brass-ink:#e2bd6b; --seal:#e8735c; --seal-soft:#3a1c16; --ok:#74c4a5; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: var(--paper); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { width: 100%; max-width: 400px; }
+.brand { display: flex; align-items: center; gap: 10px; font: 700 20px 'Iowan Old Style', Palatino, Georgia, serif; margin-bottom: 20px; }
+.brand svg { width: 28px; height: 28px; }
+.card { background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 24px; box-shadow: 0 8px 20px -10px rgba(60,45,20,.35); }
+h1 { font: 600 24px 'Iowan Old Style', Palatino, Georgia, serif; margin: 0 0 4px; }
+.sub { color: var(--ink2); margin: 0 0 20px; font-size: 14px; }
+label { display: block; font-size: 13px; font-weight: 600; color: var(--ink2); margin: 14px 0 5px; }
+input { width: 100%; font: inherit; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); color: var(--ink); }
+input:focus-visible { outline: 2px solid var(--brass-ink); outline-offset: 1px; border-color: var(--brass-ink); }
+button { width: 100%; margin-top: 20px; padding: 11px; font: 600 15px inherit; font-family: inherit; border: 1px solid var(--ink); border-radius: 6px; background: var(--ink); color: var(--paper); cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--brass-ink); outline-offset: 2px; }
+.err { background: var(--seal-soft); border-left: 3px solid var(--seal); padding: 10px 12px; border-radius: 6px; font-size: 14px; margin-bottom: 8px; }
+.note { border-left: 3px solid var(--ok); padding: 10px 12px; font-size: 14px; margin-bottom: 8px; }
+.alt { text-align: center; margin-top: 16px; font-size: 14px; color: var(--ink2); }
+a { color: var(--brass-ink); }
+.hint { font-size: 12.5px; color: var(--ink2); margin-top: 6px; }
+.fine { text-align: center; font-size: 12px; color: var(--ink2); margin-top: 18px; }

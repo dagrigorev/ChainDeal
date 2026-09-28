@@ -1,0 +1,118 @@
+# Traefik v3 as the cluster ingress controller (plain manifests, no Helm).
+# Docker Desktop publishes the LoadBalancer Service on localhost:80/443.
+# TLS terminates here; plain HTTP is redirected to HTTPS.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: traefik, namespace: ingress }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: traefik-ingress }
+rules:
+  - apiGroups: [""]
+    resources: [services, secrets, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, ingressclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses/status]
+    verbs: [update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: traefik-ingress }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: traefik-ingress }
+subjects: [{ kind: ServiceAccount, name: traefik, namespace: ingress }]
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: traefik
+  annotations: { ingressclass.kubernetes.io/is-default-class: "true" }
+spec:
+  controller: traefik.io/ingress-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: traefik, namespace: ingress, labels: { app: traefik } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: traefik } }
+  template:
+    metadata: { labels: { app: traefik } }
+    spec:
+      serviceAccountName: traefik
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeTaintsPolicy: Honor
+          matchLabelKeys: [pod-template-hash]
+          labelSelector: { matchLabels: { app: traefik } }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: traefik
+          image: traefik:v3.5
+          args:
+            - --providers.kubernetesingress=true
+            - --providers.kubernetesingress.ingressclass=traefik
+            - --entryPoints.web.address=:8000
+            - --entryPoints.websecure.address=:8443
+            - --entryPoints.websecure.http.tls=true
+            - --entryPoints.web.http.redirections.entryPoint.to=:443 # published port, not the container port
+            # Only trust X-Forwarded-* from nowhere: clients can't spoof their IP.
+            - --entryPoints.web.forwardedHeaders.insecure=false
+            - --entryPoints.websecure.forwardedHeaders.insecure=false
+            - --entryPoints.web.http.redirections.entryPoint.scheme=https
+            - --entryPoints.web.http.redirections.entryPoint.permanent=true
+            - --ping=true
+            - --log.level=INFO
+            - --global.checkNewVersion=false
+            - --global.sendAnonymousUsage=false
+          ports:
+            - { name: web, containerPort: 8000 }
+            - { name: websecure, containerPort: 8443 }
+          readinessProbe:
+            httpGet: { path: /ping, port: 8080 }
+          livenessProbe:
+            httpGet: { path: /ping, port: 8080 }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+# Docker Desktop maps LoadBalancer Services to localhost.
+apiVersion: v1
+kind: Service
+metadata: { name: traefik, namespace: ingress }
+spec:
+  type: LoadBalancer
+  selector: { app: traefik }
+  ports:
+    - { name: web, port: 80, targetPort: web }
+    - { name: websecure, port: 443, targetPort: websecure }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: traefik, namespace: ingress }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: traefik } }

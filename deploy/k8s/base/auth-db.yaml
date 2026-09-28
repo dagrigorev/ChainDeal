@@ -1,0 +1,72 @@
+# The auth microservice's private database. Separate from the chain's
+# Tarantool so identity data (password hashes, encrypted emails, token hashes)
+# never shares a process, credentials or network path with chain data:
+# only auth pods may connect (see network-policies.yaml).
+apiVersion: v1
+kind: Service
+metadata: { name: auth-db, labels: { app: auth-db } }
+spec:
+  clusterIP: None
+  selector: { app: auth-db }
+  ports: [{ name: iproto, port: 3301 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: auth-db }
+spec:
+  serviceName: auth-db
+  replicas: 1
+  selector: { matchLabels: { app: auth-db } }
+  template:
+    metadata: { labels: { app: auth-db } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: tarantool
+          image: tarantool/tarantool:3.2
+          command: ["/bin/sh", "-c", "unset TT_INSTANCE_NAME TT_APP_NAME; exec tarantool /opt/auth/init.lua"]
+          env:
+            - name: AUTH_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: chaindeal-auth, key: AUTH_DB_PASSWORD } }
+            - { name: TT_MEMTX_MEMORY_MB, value: "128" }
+            - { name: PROBE_USER, value: auth }
+            - name: PROBE_PASSWORD
+              valueFrom: { secretKeyRef: { name: chaindeal-auth, key: AUTH_DB_PASSWORD } }
+          ports: [{ name: iproto, containerPort: 3301 }]
+          readinessProbe:
+            exec: { command: [sh, -c, "unset TT_INSTANCE_NAME TT_APP_NAME; exec tarantool /opt/probe/probe.lua"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: [sh, -c, "unset TT_INSTANCE_NAME TT_APP_NAME; exec tarantool /opt/probe/probe.lua"] }
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/tarantool }
+            - { name: init, mountPath: /opt/auth, readOnly: true }
+            - { name: probe, mountPath: /opt/probe, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: init
+          configMap: { name: auth-db-init }
+        - name: probe
+          configMap: { name: tarantool-init, items: [{ key: probe.lua, path: probe.lua }] }
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }

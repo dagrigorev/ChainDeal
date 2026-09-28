@@ -1,0 +1,72 @@
+# Identity microservice: OAuth 2.1 / OIDC authorization server + user management.
+# Stateless (state in auth-db), so it scales horizontally.
+apiVersion: v1
+kind: Service
+metadata: { name: auth }
+spec:
+  selector: { app: auth }
+  ports: [{ name: http, port: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: auth }
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector: { matchLabels: { app: auth } }
+  template:
+    metadata: { labels: { app: auth } }
+    spec:
+      terminationGracePeriodSeconds: 15
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          # Required, not preferred: replicas must land on different nodes.
+          whenUnsatisfiable: DoNotSchedule
+          # Only count nodes this pod can run on (not the tainted control plane)…
+          nodeTaintsPolicy: Honor
+          # …and only pods of the same revision, so rolling updates aren't blocked.
+          matchLabelKeys: [pod-template-hash]
+          labelSelector: { matchLabels: { app: auth } }
+      containers:
+        - name: auth
+          image: chaindeal-auth:dev
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            # AUTH_DB_PASSWORD, AUTH_SIGNING_KEY, AUTH_DATA_KEY, AUTH_INDEX_KEY,
+            # AUTH_SEED_CLIENT_SECRET, AUTH_BOOTSTRAP_ADMIN_EMAIL/PASSWORD
+            - secretRef: { name: chaindeal-auth }
+          env:
+            - { name: AUTH_DB_ADDR, value: "auth-db:3301" }
+            - { name: AUTH_ISSUER, value: "https://chaindeal.localhost" }
+            - { name: AUTH_WEB_REDIRECTS, value: "https://chaindeal.localhost/callback,https://chaindeal.test/callback,http://localhost:5173/callback" }
+            - { name: RUST_LOG, value: "info,tower_http=warn" }
+          ports: [{ name: http, containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /oauth/healthz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /oauth/healthz, port: http }
+            periodSeconds: 15
+          resources:
+            # Argon2id uses ~19 MiB per hash; the service caps concurrency at 4.
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: auth }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: auth } }

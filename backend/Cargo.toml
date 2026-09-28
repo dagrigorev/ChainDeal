@@ -1,0 +1,22 @@
+[package]
+name = "chaindeal-backend"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chaindeal-core = { path = "../crates/core" }
+chaindeal-authn = { path = "../crates/authn" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+tarantool-rs = "0.0.10"
+rmpv = { version = "1", features = ["with-serde"] }
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors", "trace", "fs", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+futures = "0.3"
+rand = "0.8"
+tokio-stream = { version = "0.1", features = ["sync"] }

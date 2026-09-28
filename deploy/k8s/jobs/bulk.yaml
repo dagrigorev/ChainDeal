@@ -1,0 +1,32 @@
+# One-shot history generator; run against an empty master before the app tier.
+apiVersion: batch/v1
+kind: Job
+metadata: { name: chaindeal-bulk, namespace: chaindeal }
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata: { labels: { app: chaindeal-bulk } }
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: bulk
+          image: chaindeal-backend:dev
+          imagePullPolicy: IfNotPresent
+          command: [chaindeal-bulk, --txs, "1000000", --days, "7", --agents, "6000"]
+          env:
+            - { name: TARANTOOL_ADDR, value: "tarantool-rw:3301" }
+            - name: TARANTOOL_PASSWORD
+              valueFrom: { secretKeyRef: { name: chaindeal-db, key: CHAINDEAL_DB_PASSWORD } }
+          resources:
+            requests: { cpu: "1", memory: 256Mi }
+            limits: { memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
