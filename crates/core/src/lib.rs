@@ -7,6 +7,7 @@
 
 pub mod contract;
 pub mod crypto;
+pub mod document;
 pub mod types;
 
 pub use contract::{apply_tx, policy_for, ContractError, DealPolicy, WorkingState};

@@ -1,0 +1,24 @@
+{
+  "checks": [
+    {
+      "detail": "Signature verifies with market key d14fc268bfa299bd for chain 0000c5fb80b08681…",
+      "name": "Issued by this market",
+      "ok": true
+    },
+    {
+      "detail": "Rebuilding the record from the chain gives exactly the hash printed on the document.",
+      "name": "Content matches the chain",
+      "ok": true
+    },
+    {
+      "detail": "6 of 6 events proven by Merkle inclusion in blocks whose hashes re-derive.",
+      "name": "Every event is sealed in a block",
+      "ok": true
+    }
+  ],
+  "current_number": "CD-8E31-807B-FE5A-938B",
+  "final": true,
+  "number": "CD-8E31-807B-FE5A-938B",
+  "status": "resolved",
+  "valid": true
+}

@@ -1,0 +1,256 @@
+{
+  "attestation": {
+    "alg": "Ed25519",
+    "key_id": "d14fc268bfa299bd",
+    "public_key": "cdd724715d63b227044cbad5c07eec176bcd970ba4d0b7b006b4f22f79d1ca07",
+    "signature": "cc09d6f30180d6e8403e86891a61eacdbadff2d3ad33eea0f24ef21a91304a36d86b419cb9c2f5a3e7760a3b6e90c3c9287503452a8c4eea5af123c373b2d103"
+  },
+  "hash": "8e31807bfe5a938b74aa7ab73f6b32531f10f577910450224c5d91d931f9a039",
+  "number": "CD-8E31-807B-FE5A-938B",
+  "record": {
+    "arbiter": {
+      "address": "0x62fa2dea1824e7b08c24a41b1fabc67c81f86564",
+      "kind": "business",
+      "name": "TrustCourt Arbitration"
+    },
+    "buyer": {
+      "address": "0x54344b84c37b9377ba184aee59cad1774b3caca0",
+      "kind": "business",
+      "name": "Globex Logistics"
+    },
+    "buyer_refund_bps": 4000,
+    "chain_id": "0000c5fb80b086816cf9bdcd5bd79263a6210019bd653da284bc9aa6387f5a64",
+    "created_at": 1790583162,
+    "deal_id": "D-b61952d4efe3",
+    "deal_type": "B2B",
+    "description": "Delivery to Rotterdam DC, installation included.",
+    "dispute_reason": "Two of four racks arrived with bent rails.",
+    "events": [
+      {
+        "at": 1790583162,
+        "block_hash": "00001664a1b8c5db2f101c55477715151607c64e484e5d4a4f3ff8a0c529d14d",
+        "block_height": 10404,
+        "by": "0x54344b84c37b9377ba184aee59cad1774b3caca0",
+        "merkle_root": "b6579cd1ec108b0cdc885e4e73dbd2bff58640df0f1964e1704590667e9ec100",
+        "note": "deal proposed",
+        "proof": [
+          {
+            "left": false,
+            "sibling": "5d8f0583b206300808d6cbf1ddd2dd83560db29101f0e7f074ee4d27eff31ba4"
+          },
+          {
+            "left": false,
+            "sibling": "105b742c40474a537ca48fb8446bca218451cc65c09f772c0fa7a99436fcacfb"
+          },
+          {
+            "left": true,
+            "sibling": "c40b77ea76d62cb8251c4264faafe171de3bda0c934c27d90ef1ee097cbcbbbe"
+          },
+          {
+            "left": false,
+            "sibling": "5d514c16ad0a8525b6e7ced526407f817025a9900c9f26ca73221f78015024ba"
+          },
+          {
+            "left": false,
+            "sibling": "54fdff9b70451b17e8c1f35e6b6c3402ecb01f1e9a54bc6331eb711e6db5166a"
+          }
+        ],
+        "status": "proposed",
+        "tx_hash": "b61952d4efe36ffec5f5bd0ada4d92d45f6fef2cc58dc0e5a9234fc7d495fead"
+      },
+      {
+        "at": 1790583164,
+        "block_hash": "0000fc2828d1c1c42ee76b8a14cc893bac4f16e22cd79a809cfb3be6e423a547",
+        "block_height": 10405,
+        "by": "0x9a258d7e0fcd989f180deec274a0dd79d5e2ef14",
+        "merkle_root": "bb32e41557c5488be68a8e41678dc29e06e45b8017f10cb6f17fc10b263b8192",
+        "note": "terms accepted; buyer must fund within 240s",
+        "proof": [
+          {
+            "left": true,
+            "sibling": "f1c411f487788f755d87a6babc5e4b5ce369c0cc7a2425594b70ff03d0cdf3a2"
+          },
+          {
+            "left": true,
+            "sibling": "04df4e53591d97af8283711e13ba7eb29297d8bb15f6d596b83f3afd3596b3f2"
+          },
+          {
+            "left": false,
+            "sibling": "4f2abc6f650b337a5872f4f46fcbc00fb72bd177ab8133239ba8594642f83871"
+          },
+          {
+            "left": false,
+            "sibling": "fadc8ab8c38fdd678cee012f563c4ea01c6d8fd511299bb4f9711ce8b7826a9b"
+          },
+          {
+            "left": false,
+            "sibling": "f3948ba3851dea97e2273791618f9a75df98480ac27f82f4648364382bbf158f"
+          }
+        ],
+        "status": "accepted",
+        "tx_hash": "8a0306872136d287c01cd50e6b6735fba0d64c9877080f576149f558a633218a"
+      },
+      {
+        "at": 1790583166,
+        "block_hash": "0000377dc5b921ed0da6a0668c027daf51a1e7d15428d4772ccffb22510ae664",
+        "block_height": 10406,
+        "by": "0x54344b84c37b9377ba184aee59cad1774b3caca0",
+        "merkle_root": "fa62928f1e9ea07959ece5a582ac242980867346e17b199b57397bd1e57d56df",
+        "note": "8200.00 DEAL locked in escrow; seller must deliver within 420s",
+        "proof": [
+          {
+            "left": true,
+            "sibling": "be1073b315605ea9b23cef436e75429b8524c6a5ca5df50f1459bd0ef71865ce"
+          },
+          {
+            "left": false,
+            "sibling": "551cc6177f835029a5d32ef2c552edeb29552a0ed5850fb4d155825e31106559"
+          },
+          {
+            "left": true,
+            "sibling": "cbc705b60e7d60d1469bb475ef03b38f53b96be4abd0ff16438d0c3e62a08624"
+          },
+          {
+            "left": false,
+            "sibling": "a3e16212e4862a2abba0998c8f87441974db63883bd7d45583edcab0c8a7c1b3"
+          },
+          {
+            "left": false,
+            "sibling": "2ff82ac43e8d8c10d62b54b2a8e3d80c9e09bea31000938da39099954c28cb7d"
+          }
+        ],
+        "status": "funded",
+        "tx_hash": "cbbe63f0541b4ccf795b3b40744eea1635cd295df182f26d734915f2de430a36"
+      },
+      {
+        "at": 1790583168,
+        "block_hash": "00003cf1ddefda03cd09cd13552d1e61984d75b6ab441ab9cba4db07006c7038",
+        "block_height": 10407,
+        "by": "0x9a258d7e0fcd989f180deec274a0dd79d5e2ef14",
+        "merkle_root": "58122aa2c3ce8134fb2a34f838aba5cb6abf02a1d444e283c7808fdc11a65365",
+        "note": "delivered; auto-release in 240s unless disputed",
+        "proof": [
+          {
+            "left": true,
+            "sibling": "a5499c2100d98143e39ceb9fe608bf236e66e252671552fd662ad2088861f1e4"
+          },
+          {
+            "left": false,
+            "sibling": "1591104b80c4a9b10393588cbcbc2e093ea698dadce12cab3f167f936cf58640"
+          },
+          {
+            "left": true,
+            "sibling": "3b51a8d4572fb2b6a225df434ad4016bf841080a3c0d33716f21de8accad4881"
+          },
+          {
+            "left": false,
+            "sibling": "e0eb37dda8e21f5fce69fc4e5942410bb15db19477f645d84a9a2a7d68831c04"
+          },
+          {
+            "left": false,
+            "sibling": "b6a2a212a81e2b511b46ce311b2eddff8e9c56f58dbe52c65f9d94a77c0b160d"
+          }
+        ],
+        "status": "shipped",
+        "tx_hash": "dd627cfa741f3894a55cc1f5e9fa523065c1f5b5d330a8052072ffa81d2de424"
+      },
+      {
+        "at": 1790583170,
+        "block_hash": "0000391b2e89410028ad1b3bcd4a3f8e9a96177447c687426ac6980bc3decd7b",
+        "block_height": 10408,
+        "by": "0x54344b84c37b9377ba184aee59cad1774b3caca0",
+        "merkle_root": "4cdc4667a4cb62f32ae88b199479b3b5503b89c554c4c2e4ebc2180a3beba78a",
+        "note": "Two of four racks arrived with bent rails.",
+        "proof": [
+          {
+            "left": false,
+            "sibling": "da5ab10c6e7c538c934d394973ed6fedd0355357ededee1ba5f69a1723401ebe"
+          },
+          {
+            "left": false,
+            "sibling": "57695fae056ef55a71ed6949b8955c48d1eb4c31c81953a39081ea4503621607"
+          },
+          {
+            "left": false,
+            "sibling": "d31313fd032dfb088220160654b425dede7f422653fee84f60229111c0914da4"
+          },
+          {
+            "left": false,
+            "sibling": "f908e33922a5534a62580e4de3124e14d99f75655c9f943bd412ecf8e5565063"
+          },
+          {
+            "left": false,
+            "sibling": "ca4cb9f7fbd50b11f0947541f5adba5875e17952cbb58cbc9782034c207d9937"
+          }
+        ],
+        "status": "disputed",
+        "tx_hash": "46ee7e827f6ad5c17553c2c67b4301f95ae19c34d3e4ae563b7d08187b5d3f7f"
+      },
+      {
+        "at": 1790583172,
+        "block_hash": "000098b686b2f5a565ec6729ec80cee009f53ec13f9c6aefd011c676dbbdc63e",
+        "block_height": 10409,
+        "by": "0x62fa2dea1824e7b08c24a41b1fabc67c81f86564",
+        "merkle_root": "858b6af1875195c345bae124cf47deb9e3546b094750e4b4fbeca847ac1932b0",
+        "note": "arbiter awarded 40.00% to buyer. Damage documented on delivery photos.",
+        "proof": [
+          {
+            "left": false,
+            "sibling": "cc62f646b6c6714671756826353bfadb715c75e899a107cb3c74348c811303d6"
+          },
+          {
+            "left": false,
+            "sibling": "7c82de24cc9c86d0c36b97645e3ed912d9ff9efa7220ec2902db051769563196"
+          },
+          {
+            "left": false,
+            "sibling": "64e77716d6b5dd0a1589560c04bb39ad67914d8633ffd10e95e0f7c9dddd80ce"
+          },
+          {
+            "left": false,
+            "sibling": "6399b044303f7e64c2ca347dcd148c050a3b22374f500e00180dad923f28b68b"
+          },
+          {
+            "left": false,
+            "sibling": "f818710441fd29bb02d0c3f9b90edbb5ba01149d413157ce05ed3af93ea543ad"
+          }
+        ],
+        "status": "resolved",
+        "tx_hash": "9c1c78e67d8c8aa861b6dd6112f5ffe52e23ba3fcfd7f3320d2dfb4a92ed55e9"
+      }
+    ],
+    "is_final": true,
+    "items": [
+      {
+        "name": "42U server rack",
+        "qty": 4,
+        "unit_price": 190000
+      },
+      {
+        "name": "On-site installation",
+        "qty": 1,
+        "unit_price": 60000
+      }
+    ],
+    "proposer": "0x54344b84c37b9377ba184aee59cad1774b3caca0",
+    "seller": {
+      "address": "0x9a258d7e0fcd989f180deec274a0dd79d5e2ef14",
+      "kind": "business",
+      "name": "Acme Electronics"
+    },
+    "settlement": {
+      "amount": 820000,
+      "bond": 82000,
+      "bond_to": "seller",
+      "fee": 2460,
+      "to_buyer": 328000,
+      "to_seller": 489540
+    },
+    "status": "resolved",
+    "title": "Q4 server rack order",
+    "tracking": "FREIGHT-NL-99812",
+    "updated_at": 1790583172,
+    "version": 1
+  },
+  "verify_path": "/#/verify?deal=D-b61952d4efe3&hash=8e31807bfe5a938b74aa7ab73f6b32531f10f577910450224c5d91d931f9a039&sig=cc09d6f30180d6e8403e86891a61eacdbadff2d3ad33eea0f24ef21a91304a36d86b419cb9c2f5a3e7760a3b6e90c3c9287503452a8c4eea5af123c373b2d103"
+}

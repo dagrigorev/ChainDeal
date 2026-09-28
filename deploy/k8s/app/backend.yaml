@@ -48,6 +48,8 @@ spec:
             # Access tokens are verified against the auth service's published keys.
             - { name: AUTH_JWKS_URL, value: "http://auth:8080/oauth/jwks" }
             - { name: AUTH_ISSUER, value: "https://chaindeal.localhost" }
+            - name: CHAINDEAL_ATTESTATION_KEY
+              valueFrom: { secretKeyRef: { name: chaindeal-attest, key: CHAINDEAL_ATTESTATION_KEY } }
             - name: CHAINDEAL_NODE_ID
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - { name: CHAINDEAL_SIM_RATE, value: "10" }

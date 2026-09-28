@@ -196,3 +196,30 @@ export interface Transition {
   amount: number;
   title: string;
 }
+
+// ---- contract documents (crates/core/src/document.rs) ----
+
+export interface PartyRecord { address: string; name: string; kind: PartyKind }
+export interface EventRecord {
+  status: DealStatus; by: string; at: number; note: string; tx_hash: string;
+  block_height: number; block_hash: string; merkle_root: string; proof: { sibling: string; left: boolean }[];
+}
+export interface DealRecord {
+  version: number; chain_id: string; deal_id: string; deal_type: DealType; title: string; description: string;
+  seller: PartyRecord; buyer: PartyRecord; arbiter: PartyRecord | null; proposer: string; items: LineItem[];
+  status: DealStatus; is_final: boolean; created_at: number; updated_at: number; tracking: string | null;
+  buyer_refund_bps: number | null; dispute_reason: string | null;
+  settlement: { amount: number; fee: number; bond: number; to_seller: number; to_buyer: number; bond_to: string | null };
+  events: EventRecord[];
+}
+export interface ContractDocument {
+  number: string;
+  hash: string;
+  record: DealRecord;
+  attestation: { alg: string; key_id: string; public_key: string; signature: string };
+  verify_path: string;
+}
+export interface DocumentVerification {
+  valid: boolean; final?: boolean; number?: string; current_number?: string; status?: DealStatus;
+  checks: { name: string; ok: boolean; detail: string }[];
+}

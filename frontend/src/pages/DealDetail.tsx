@@ -43,6 +43,10 @@ function DealView({ d }: { d: Deal }) {
             </div>
           </div>
           <div className="head-amount">
+            <div className="row gap doc-links">
+              <a className="btn xs" href={href(`/deals/${d.id}/document?std=ru`)} title="Договор купли-продажи (ГОСТ Р 7.0.97-2016)">Договор · RU</a>
+              <a className="btn xs" href={href(`/deals/${d.id}/document?std=us`)} title="Purchase and Sale Agreement (US Letter)">Agreement · US</a>
+            </div>
             <Amount v={d.amount} className="xl" />
             <div className={`step ${step.mine ? 'mine' : ''}`}>{step.mine ? 'Your move — ' : ''}{step.text}</div>
           </div>
