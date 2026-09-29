@@ -1,0 +1,51 @@
+# The live market simulator as its own service. It streams signed transactions
+# to the chain nodes over gRPC (LedgerService.SubmitTxs on backend:9090),
+# authenticated as the OAuth client `chaindeal-sim`, and reads chain state from
+# the read replica. A lease in Tarantool keeps exactly one instance active, so a
+# rolling update hands over cleanly.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: chaindeal-sim }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: chaindeal-sim } }
+  template:
+    metadata: { labels: { app: chaindeal-sim } }
+    spec:
+      terminationGracePeriodSeconds: 10
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: sim
+          image: chaindeal-backend:dev
+          imagePullPolicy: IfNotPresent
+          command: ["chaindeal-sim"]
+          env:
+            - { name: LEDGER_GRPC_URL, value: "http://backend:9090" }
+            - { name: AUTH_TOKEN_URL, value: "http://auth:8080/oauth/token" }
+            - { name: SIM_CLIENT_ID, value: "chaindeal-sim" }
+            - name: SIM_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: chaindeal-sim, key: SIM_CLIENT_SECRET } }
+            - { name: TARANTOOL_ADDR, value: "tarantool-rw:3301" }
+            - { name: TARANTOOL_READ_ADDR, value: "tarantool-read:3301" }
+            - name: TARANTOOL_PASSWORD
+              valueFrom: { secretKeyRef: { name: chaindeal-db, key: CHAINDEAL_DB_PASSWORD } }
+            - { name: CHAINDEAL_SIM_RATE, value: "10" }
+            - { name: RUST_LOG, value: "info" }
+          ports: [{ name: health, containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }

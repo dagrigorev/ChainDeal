@@ -3,10 +3,11 @@ import Outcomes from '../components/Outcomes';
 import { Amount, Card, Empty, Loading, StatusBadge, TypeBadge, useLive } from '../components/ui';
 import { api, ApiError } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { STATUS_LABEL } from '../lib/format';
+import { ACTION_LABEL, short, STATUS_LABEL } from '../lib/format';
 import { href } from '../lib/router';
-import { useStore, type NodeEvent } from '../lib/store';
-import type { ClusterInfo, DealStatus, Metrics, SimConfig, SimSnapshot, TarantoolInstance, Transition } from '../lib/types';
+import { useStore, type NodeEvent, type StreamInfo, type StreamTx } from '../lib/store';
+import type { ClusterInfo, DealStatus, Metrics, SignedTx, SimConfig, SimSnapshot, TarantoolInstance, Transition } from '../lib/types';
+import { verifyTx } from '../lib/wasm';
 
 /* --------------------------------------------------------------------------
    The Floor: the deal state machine drawn as a map. Node counts are live
@@ -362,6 +363,7 @@ export default function Live() {
       </div>
 
       <div className="grid-main">
+        <div className="stack">
         <Card title="Tape">
           {tape.length === 0 ? <Empty>Waiting for the next block…</Empty> : (
             <ol className="tape-list">
@@ -378,6 +380,8 @@ export default function Live() {
             </ol>
           )}
         </Card>
+        <TxStream />
+        </div>
         <aside className="stack">
           {s && (
             <Card title={`All-time outcomes · ${s.deals.toLocaleString()} deals · ${s.txs.toLocaleString()} txs`}>
@@ -394,12 +398,79 @@ export default function Live() {
                 <dt>Adopted at start</dt><dd>{sim.stats.adopted.toLocaleString()}</dd>
                 <dt>Sent / refused</dt><dd>{sim.stats.sent.toLocaleString()} / {sim.stats.refused.toLocaleString()}</dd>
                 <dt>Deliberately invalid</dt><dd>{sim.stats.noise_sent.toLocaleString()}</dd>
+                <dt>Runs as</dt><dd className="ellipsis" title={sim.runner ?? ''}>{sim.runner ? <><span className="mono small">{sim.runner}</span> · gRPC stream</> : 'not running'}</dd>
               </dl>
             </Card>
           )}
         </aside>
       </div>
     </div>
+  );
+}
+
+/* --------------------------------------------------------------------------
+   Transaction stream: every confirmed transaction arrives over gRPC-Web
+   (LedgerService.Watch) with its signed body, and its ed25519 signature is
+   re-verified here by the Rust wallet compiled to WebAssembly.
+   -------------------------------------------------------------------------- */
+
+type CheckedTx = StreamTx & { ok: boolean };
+
+function TxStream() {
+  const { subscribe, streamInfo, nameOf } = useStore();
+  const [rows, setRows] = useState<CheckedTx[]>([]);
+  const checked = useRef({ ok: 0, bad: 0 });
+  const [info, setInfo] = useState<(StreamInfo & { rate: number }) | null>(null);
+
+  useEffect(
+    () =>
+      subscribe((e) => {
+        if (e.type !== 'block' || !e.transactions.length) return;
+        const got = e.transactions.map((t): CheckedTx => {
+          let ok = false;
+          try {
+            ok = verifyTx({ hash: t.hash, body: JSON.parse(t.bodyJson), signature: t.signature } as SignedTx) === '';
+          } catch {
+            ok = false;
+          }
+          checked.current[ok ? 'ok' : 'bad']++;
+          return { ...t, ok };
+        });
+        setRows((prev) => [...got.reverse(), ...prev].slice(0, 10));
+      }),
+    [subscribe],
+  );
+
+  useEffect(() => {
+    let last = streamInfo().events;
+    const t = setInterval(() => {
+      const s = streamInfo();
+      setInfo({ ...s, rate: s.events - last });
+      last = s.events;
+    }, 1000);
+    return () => clearInterval(t);
+  }, [streamInfo]);
+
+  return (
+    <Card title="Transaction stream · gRPC-Web">
+      <p className="muted small stream-status">
+        <span className={`inst-dot ${info?.up ? '' : 'down'}`} aria-hidden /> {info?.up ? 'Connected' : 'Connecting…'}
+        {info && <> · {info.rate} events/s · seq {info.seq.toString()}{info.reconnects > 0 && <> · {info.reconnects} reconnect{info.reconnects === 1 ? '' : 's'}</>}</>}
+        {' · '}<b>{checked.current.ok.toLocaleString()}</b> signatures verified in your browser{checked.current.bad > 0 && <span className="err-text"> · {checked.current.bad} failed</span>}
+      </p>
+      {rows.length === 0 ? <Empty>Waiting for the next block…</Empty> : (
+        <ol className="txstream">
+          {rows.map((t) => (
+            <li key={t.hash}>
+              <span className={`tag ${t.ok ? 'ok' : 'warn'}`} title={t.ok ? 'ed25519 signature verified in the browser (Rust/WASM)' : 'signature check failed'}>{t.ok ? '✓ sig' : '✗ sig'}</span>
+              <a className="mono small" href={href(`/explorer/tx/${t.hash}`)}>{short(t.hash, 8)}</a>
+              <span className="grow ellipsis">{ACTION_LABEL[t.action] ?? t.action} <span className="muted">by {nameOf(t.from)}</span></span>
+              <a className="muted small" href={href(`/explorer/block/${t.blockHeight}`)}>#{t.blockHeight}</a>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Card>
   );
 }
 

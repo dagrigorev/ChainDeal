@@ -1,0 +1,11 @@
+# buf module for the ChainDeal APIs (lint: `cd frontend && npx buf lint ../proto`).
+version: v2
+lint:
+  use: [STANDARD]
+  except:
+    # Server streams carry domain objects (LedgerEvent, SealedBlock, TxReceipt),
+    # not per-call wrappers; their names say what each stream item is.
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE
+breaking:
+  use: [FILE]

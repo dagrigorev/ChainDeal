@@ -1,26 +1,30 @@
 //! Live market simulator: a population of agent wallets that open, advance,
 //! decline, dispute and abandon deals at a target rate (default 10 tx/s).
 //!
-//! Every action is a real signed transaction submitted through the node's
-//! normal admission path, so the simulator exercises exactly what users do,
-//! including refusals. It also "adopts" open deals left by the bulk loader or a
-//! previous run, and acts as keeper for lapsed deadlines.
+//! It runs as its own service (`chaindeal-sim`). Every action is a real signed
+//! transaction streamed to the chain nodes over gRPC (`LedgerService.SubmitTxs`), so
+//! the simulator exercises exactly the path other clients use, including
+//! refusals. It reads deal state from the chain's read replica, "adopts" open
+//! deals left by the bulk loader or a previous run, and acts as keeper for
+//! lapsed deadlines.
 //!
-//! In a cluster only the leader node runs it. Its config and a live snapshot
-//! live in Tarantool, so any node can serve and change them; when leadership
-//! moves, the new leader bootstraps and adopts the in-flight deals.
+//! One instance is active at a time (a lease in Tarantool). Its config and a
+//! live snapshot live in Tarantool too, so any API node can serve and change
+//! them through `SimControl`.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chaindeal_core::*;
+use futures::future::BoxFuture;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
-use crate::chain::{now_ms, Node, SubmitError};
+use crate::chain::now_ms;
+use crate::db::Db;
 use crate::synth::{self, Agent, Plan, Roster, Step};
 
 const TICK: Duration = Duration::from_millis(100);
@@ -29,6 +33,9 @@ const MAX_ACTIVE: usize = 6000;
 const CONFIRM_GRACE_SECS: u64 = 12;
 const KV_CONFIG: &str = "sim_config";
 const KV_SNAPSHOT: &str = "sim_snapshot";
+/// Only one simulator instance acts at a time (e.g. during a rolling update).
+pub const SIM_LEASE: &str = "simulator";
+const SIM_LEASE_TTL: f64 = 6.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimConfig {
@@ -41,12 +48,95 @@ pub struct SimConfig {
     pub noise: f64,
 }
 
+impl Default for SimConfig {
+    fn default() -> Self {
+        SimConfig { running: true, rate: 10.0, pressure: 1.0, noise: 0.02 }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SimPatch {
     pub running: Option<bool>,
     pub rate: Option<f64>,
     pub pressure: Option<f64>,
     pub noise: Option<f64>,
+}
+
+/// What happened to a submitted transaction at admission.
+#[derive(Debug)]
+pub enum Receipt {
+    Admitted { deal_id: Option<String> },
+    /// Refused by the node (invalid, or the contract says no).
+    Refused(String),
+    /// Transport or node failure; nothing is known about the transaction.
+    Failed(String),
+}
+
+/// Where the simulator sends its transactions (the gRPC stream in production).
+pub trait Submitter: Send + Sync {
+    fn submit(&self, tx: SignedTx) -> BoxFuture<'_, Receipt>;
+}
+
+/// The shared config and snapshot in Tarantool: read and changed by API nodes
+/// (`/api/sim`), followed by the simulator service.
+pub struct SimControl {
+    db: Db,
+    config: std::sync::Mutex<SimConfig>,
+}
+
+impl SimControl {
+    pub fn new(db: Db, defaults: SimConfig) -> Self {
+        SimControl { db, config: std::sync::Mutex::new(defaults) }
+    }
+
+    pub fn config(&self) -> SimConfig {
+        self.config.lock().unwrap().clone()
+    }
+
+    /// Applies a patch to the shared (cluster-wide) config.
+    pub async fn patch(&self, p: SimPatch) -> anyhow::Result<SimConfig> {
+        self.refresh().await;
+        let c = {
+            let mut c = self.config.lock().unwrap();
+            if let Some(v) = p.running { c.running = v; }
+            if let Some(v) = p.rate { c.rate = v.clamp(0.5, 200.0); }
+            if let Some(v) = p.pressure { c.pressure = v.clamp(0.0, 5.0); }
+            if let Some(v) = p.noise { c.noise = v.clamp(0.0, 0.5); }
+            c.clone()
+        };
+        self.db.kv_set(KV_CONFIG, &serde_json::to_string(&c)?).await?;
+        Ok(c)
+    }
+
+    /// Pulls the shared config; seeds it from the defaults if absent.
+    pub async fn refresh(&self) {
+        match self.db.kv_get(KV_CONFIG).await {
+            Ok(Some(raw)) => {
+                if let Ok(c) = serde_json::from_str::<SimConfig>(&raw) {
+                    *self.config.lock().unwrap() = c;
+                }
+            }
+            Ok(None) => {
+                let c = self.config();
+                let _ = self.db.kv_set(KV_CONFIG, &serde_json::to_string(&c).unwrap_or_default()).await;
+            }
+            Err(e) => tracing::warn!("sim config read failed: {e:#}"),
+        }
+    }
+
+    /// Cluster-wide view: the simulator's latest published snapshot, the
+    /// shared config, and which simulator instance is active.
+    pub async fn shared_snapshot(&self) -> serde_json::Value {
+        self.refresh().await;
+        let mut v = match self.db.kv_get(KV_SNAPSHOT).await {
+            Ok(Some(raw)) => serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({})),
+            _ => serde_json::json!({}),
+        };
+        v["config"] = serde_json::json!(self.config());
+        v["runner"] = serde_json::json!(self.db.lease_holder(SIM_LEASE).await.ok().flatten());
+        v["leader"] = serde_json::json!(self.db.lease_holder("producer").await.ok().flatten());
+        v
+    }
 }
 
 #[derive(Debug, Default, Serialize, Clone)]
@@ -81,24 +171,30 @@ struct State {
 }
 
 pub struct Sim {
-    node: Arc<Node>,
+    /// This instance's id, for the lease.
+    id: String,
+    /// Master connection (lease, config, snapshot) with the read pool for chain state.
+    db: Db,
+    submitter: Arc<dyn Submitter>,
+    control: SimControl,
     roster: Roster,
     agents: Vec<Agent>,
     by_addr: HashMap<String, u32>,
-    config: std::sync::Mutex<SimConfig>,
     state: tokio::sync::Mutex<State>,
 }
 
 impl Sim {
-    pub fn new(node: Arc<Node>, total_agents: u32, config: SimConfig) -> Arc<Self> {
+    pub fn new(id: String, db: Db, submitter: Arc<dyn Submitter>, total_agents: u32, defaults: SimConfig) -> Arc<Self> {
         let roster = Roster::from_total(total_agents);
         let agents: Vec<Agent> = (0..roster.total()).map(synth::agent).collect();
         let by_addr = agents.iter().map(|a| (a.address.clone(), a.index)).collect();
         Arc::new(Sim {
-            node,
+            id,
+            control: SimControl::new(db.clone(), defaults),
+            db,
+            submitter,
             roster,
             by_addr,
-            config: std::sync::Mutex::new(config),
             state: tokio::sync::Mutex::new(State {
                 bootstrapped: false,
                 rng: StdRng::from_entropy(),
@@ -112,58 +208,6 @@ impl Sim {
         })
     }
 
-    pub fn config(&self) -> SimConfig {
-        self.config.lock().unwrap().clone()
-    }
-
-    /// Applies a patch to the shared (cluster-wide) config.
-    pub async fn patch(&self, p: SimPatch) -> anyhow::Result<SimConfig> {
-        self.refresh_config().await;
-        let c = {
-            let mut c = self.config.lock().unwrap();
-            if let Some(v) = p.running { c.running = v; }
-            if let Some(v) = p.rate { c.rate = v.clamp(0.5, 200.0); }
-            if let Some(v) = p.pressure { c.pressure = v.clamp(0.0, 5.0); }
-            if let Some(v) = p.noise { c.noise = v.clamp(0.0, 0.5); }
-            c.clone()
-        };
-        self.node.db.kv_set(KV_CONFIG, &serde_json::to_string(&c)?).await?;
-        Ok(c)
-    }
-
-    /// Pulls the shared config; seeds it from this node's env defaults if absent.
-    async fn refresh_config(&self) {
-        match self.node.db.kv_get(KV_CONFIG).await {
-            Ok(Some(raw)) => {
-                if let Ok(c) = serde_json::from_str::<SimConfig>(&raw) {
-                    *self.config.lock().unwrap() = c;
-                }
-            }
-            Ok(None) => {
-                let c = self.config();
-                let _ = self.node.db.kv_set(KV_CONFIG, &serde_json::to_string(&c).unwrap_or_default()).await;
-            }
-            Err(e) => tracing::warn!("sim config read failed: {e:#}"),
-        }
-    }
-
-    /// Cluster-wide view: the leader's latest published snapshot plus the shared config.
-    pub async fn shared_snapshot(&self) -> serde_json::Value {
-        self.refresh_config().await;
-        let leader = self.node.db.lease_holder("producer").await.ok().flatten();
-        let mut v = if self.node.is_leader() {
-            self.snapshot().await
-        } else {
-            match self.node.db.kv_get(KV_SNAPSHOT).await {
-                Ok(Some(raw)) => serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({})),
-                _ => self.snapshot().await,
-            }
-        };
-        v["config"] = serde_json::json!(self.config());
-        v["leader"] = serde_json::json!(leader);
-        v
-    }
-
     pub async fn snapshot(&self) -> serde_json::Value {
         let st = self.state.lock().await;
         let mut active: BTreeMap<String, u64> = BTreeMap::new();
@@ -172,7 +216,7 @@ impl Sim {
             *active.entry(k).or_default() += 1;
         }
         serde_json::json!({
-            "config": self.config(),
+            "config": self.control.config(),
             "agents": self.roster.total(),
             "active": st.deals.len(),
             "active_by_status": active,
@@ -184,15 +228,22 @@ impl Sim {
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut n = 0u64;
+        let mut active = false;
         loop {
             tick.tick().await;
             n += 1;
             if n % 10 == 1 {
-                self.refresh_config().await;
+                self.control.refresh().await;
             }
-            if !self.node.is_leader() {
-                // Followers stay idle; forget local state so a future
-                // leadership term starts from the chain, not stale memory.
+            if n % 20 == 1 {
+                let won = self.db.lease(SIM_LEASE, &self.id, SIM_LEASE_TTL).await.unwrap_or(false);
+                if won != active {
+                    tracing::info!(id = %self.id, "{}", if won { "simulator active" } else { "simulator standing by (another instance holds the lease)" });
+                    active = won;
+                }
+            }
+            if !active {
+                // Forget local state so a future term starts from the chain, not stale memory.
                 let mut st = self.state.lock().await;
                 if st.bootstrapped {
                     st.bootstrapped = false;
@@ -214,9 +265,9 @@ impl Sim {
             }
             if n.is_multiple_of(10) {
                 let snap = self.snapshot().await;
-                let _ = self.node.db.kv_set(KV_SNAPSHOT, &snap.to_string()).await;
+                let _ = self.db.kv_set(KV_SNAPSHOT, &snap.to_string()).await;
             }
-            let cfg = self.config();
+            let cfg = self.control.config();
             if !cfg.running {
                 continue;
             }
@@ -228,6 +279,11 @@ impl Sim {
         }
     }
 
+    /// Hands the lease back on shutdown so a replacement starts at once.
+    pub async fn release(&self) {
+        let _ = self.db.lease(SIM_LEASE, &self.id, -1.0).await;
+    }
+
     /// Finds which agents exist on chain and adopts open deals between agents.
     async fn bootstrap(&self) -> anyhow::Result<()> {
         let mut st = self.state.lock().await;
@@ -236,7 +292,7 @@ impl Sim {
         st.stats.adopted = 0;
         let addrs: Vec<String> = self.agents.iter().map(|a| a.address.clone()).collect();
         for chunk in addrs.chunks(1000) {
-            for a in self.node.db.get_accounts(chunk).await? {
+            for a in self.db.reader().get_accounts(chunk).await? {
                 if let Some(&i) = self.by_addr.get(&a.address) {
                     st.registered[i as usize] = true;
                 }
@@ -251,7 +307,7 @@ impl Sim {
         st.stats.registered = st.registered.iter().filter(|r| **r).count() as u32;
 
         let now = now_ms() / 1000;
-        let open = self.node.db.list_deals(MAX_ACTIVE as u32, 0, None, Some("open")).await?;
+        let open = self.db.reader().list_deals(MAX_ACTIVE as u32, 0, None, Some("open")).await?;
         for d in open {
             if [&d.seller, &d.buyer].iter().all(|a| self.by_addr.contains_key(*a)) {
                 let plan = Plan::adopt(&mut st.rng, &d);
@@ -269,24 +325,24 @@ impl Sim {
         Ok(())
     }
 
-    async fn send(&self, st: &mut State, agent: u32, action: Action) -> Result<TxRecord, String> {
+    async fn send(&self, st: &mut State, agent: u32, action: Action) -> Result<Option<String>, String> {
         let name = action.name().to_string();
         let tx = sign_action(&self.agents[agent as usize].secret, action, st.rng.gen::<u64>() >> 11, now_ms())
             .map_err(|e| e.to_string())?;
         st.stats.sent += 1;
         *st.stats.by_action.entry(name.clone()).or_default() += 1;
-        match self.node.submit(tx).await {
-            Ok(r) => {
+        match self.submitter.submit(tx).await {
+            Receipt::Admitted { deal_id } => {
                 st.stats.admitted += 1;
-                Ok(r)
+                Ok(deal_id)
             }
-            Err(SubmitError::Invalid(e) | SubmitError::Rejected(e)) => {
+            Receipt::Refused(e) => {
                 st.stats.refused += 1;
                 st.stats.recent_refusals.push_front(format!("{name}: {e}"));
                 st.stats.recent_refusals.truncate(12);
                 Err(e)
             }
-            Err(SubmitError::Internal(e)) => Err(e.to_string()),
+            Receipt::Failed(e) => Err(e),
         }
     }
 
@@ -314,7 +370,7 @@ impl Sim {
         if !due.is_empty() {
             let ids: Vec<String> = due.into_iter().map(|(_, k)| k).collect();
             let fetched: HashMap<String, Deal> =
-                self.node.db.get_deals(&ids).await?.into_iter().map(|d| (d.id.clone(), d)).collect();
+                self.db.reader().get_deals(&ids).await?.into_iter().map(|d| (d.id.clone(), d)).collect();
             for id in ids {
                 if st.tokens < 1.0 {
                     break;
@@ -341,7 +397,7 @@ impl Sim {
                 if !st.registered[from as usize] || !st.registered[to as usize] {
                     continue;
                 }
-                let bal = self.node.db.get_accounts(&[self.agents[from as usize].address.clone()]).await?;
+                let bal = self.db.reader().get_accounts(&[self.agents[from as usize].address.clone()]).await?;
                 if bal.first().is_some_and(|a| a.balance > amount + 5_000_00) {
                     let to = self.agents[to as usize].address.clone();
                     let _ = self.send(st, from, Action::Transfer { to, amount, memo: "payroll".into() }).await;
@@ -364,13 +420,11 @@ impl Sim {
                 continue;
             }
             let scenario = format!("{:?}", nd.plan.scenario);
-            if let Ok(rec) = self.send(st, nd.proposer, nd.action).await {
-                if let Some(id) = rec.deal_id {
-                    st.stats.deals_opened += 1;
-                    *st.stats.scenarios.entry(scenario).or_default() += 1;
-                    let next_at = now + 3 + synth::think(&mut st.rng, 8.0);
-                    st.deals.insert(id, Tracked { plan: nd.plan, next_at, last_status: None });
-                }
+            if let Ok(Some(id)) = self.send(st, nd.proposer, nd.action).await {
+                st.stats.deals_opened += 1;
+                *st.stats.scenarios.entry(scenario).or_default() += 1;
+                let next_at = now + 3 + synth::think(&mut st.rng, 8.0);
+                st.deals.insert(id, Tracked { plan: nd.plan, next_at, last_status: None });
             }
             return;
         }

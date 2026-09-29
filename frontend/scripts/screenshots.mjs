@@ -191,5 +191,9 @@ await mp.goto(UI + '/#/deals');
 await mp.getByRole('tab', { name: 'All network deals' }).click();
 await shot(mp, 'mobile-docket', { wait: 2500 });
 
+// Added last so earlier file numbers (referenced by the README) stay stable.
+await page.goto(UI + '/#/live');
+await shot(page, 'grpc-transaction-stream', { locator: 'section.card:has(h3:text-matches("Transaction stream"))', wait: 9000 });
+
 await browser.close();
 console.log(`Done: ${n} screenshots in docs/screenshots`);

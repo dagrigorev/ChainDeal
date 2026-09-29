@@ -1,0 +1,9 @@
+# TypeScript for the gRPC API in ../proto: `npm run proto` (output committed in src/gen).
+version: v2
+inputs:
+  - directory: ../proto
+plugins:
+  - local: protoc-gen-es
+    out: src/gen
+    # JS + declarations: usable from the Vite app and plain Node scripts alike.
+    opt: [target=js+dts, import_extension=js]

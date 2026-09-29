@@ -71,13 +71,17 @@ pub enum Metric {
 pub struct Node {
     pub db: Db,
     /// Local fan-out to this node's SSE subscribers (fed by the shared log).
-    pub events: broadcast::Sender<String>,
+    /// `(seq, json)`: the event and its sequence number in the shared log.
+    pub events: broadcast::Sender<(u64, String)>,
     pub node_id: String,
     pub difficulty: u32,
     /// Serialises block production within this process; across processes the
     /// lease and the tip check in `cd_commit_block` do the same.
     produce_lock: Mutex<()>,
     leader: AtomicBool,
+    /// Never takes the leader lease (CHAINDEAL_ROLE=follower), e.g. a node
+    /// under a debugger, whose pauses must not stall block production.
+    follower_only: bool,
     started_at: u64,
     outbox: std::sync::Mutex<Vec<String>>,
     pending_metrics: std::sync::Mutex<HashMap<u64, [u32; 4]>>,
@@ -118,10 +122,16 @@ impl Node {
             difficulty,
             produce_lock: Mutex::new(()),
             leader: AtomicBool::new(false),
+            follower_only: false,
             started_at: now_ms() / 1000,
             outbox: Default::default(),
             pending_metrics: Default::default(),
         }
+    }
+
+    pub fn follower_only(mut self, yes: bool) -> Self {
+        self.follower_only = yes;
+        self
     }
 
     pub fn is_leader(&self) -> bool {
@@ -174,13 +184,14 @@ impl Node {
         loop {
             tick.tick().await;
             n += 1;
-            let won = self.db.lease(LEASE_NAME, &self.node_id, LEASE_TTL).await.unwrap_or(false);
+            let won = !self.follower_only && self.db.lease(LEASE_NAME, &self.node_id, LEASE_TTL).await.unwrap_or(false);
             if won != self.leader.swap(won, Ordering::SeqCst) {
                 tracing::info!(node = %self.node_id, "{}", if won { "became leader: producing blocks and running the simulator" } else { "lost leadership; serving as follower" });
                 self.emit(json!({ "type": "leader", "node": self.node_id, "leader": won }));
             }
             let info = json!({
                 "role": if won { "leader" } else { "follower" },
+                "follower_only": self.follower_only,
                 "started_at": self.started_at,
                 "version": env!("CARGO_PKG_VERSION"),
                 "reader": self.db.has_reader(),
@@ -232,7 +243,7 @@ impl Node {
                 Ok(events) => {
                     for (seq, data) in events {
                         last = seq;
-                        let _ = self.events.send(data);
+                        let _ = self.events.send((seq, data));
                     }
                 }
                 Err(e) => tracing::warn!("event tail failed: {e:#}"),

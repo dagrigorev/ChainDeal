@@ -1,5 +1,5 @@
 # Multi-stage build producing three images:
-#   --target backend   Rust node + bulk loader (Kubernetes)
+#   --target backend   Rust node, market simulator service and bulk loader (Kubernetes)
 #   --target auth      identity microservice (OAuth 2.1 / OIDC)
 #   --target frontend  nginx serving the React/WASM UI with strict security headers (Kubernetes)
 
@@ -10,6 +10,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY backend backend
 COPY auth auth
+COPY proto proto
 RUN cargo build --release -p chaindeal-backend --bins && cargo build --release -p chaindeal-auth
 RUN wasm-pack build crates/wallet-wasm --target web --release --out-dir /wasm --out-name chaindeal_wallet
 
@@ -24,10 +25,10 @@ RUN rm -f public/demo-wallets.json && npm run build && rm -f dist/demo-wallets.j
 
 FROM debian:bookworm-slim AS backend
 RUN useradd --system --uid 10001 --no-create-home chaindeal
-COPY --from=rust /src/target/release/chaindeal-backend /src/target/release/chaindeal-bulk /usr/local/bin/
+COPY --from=rust /src/target/release/chaindeal-backend /src/target/release/chaindeal-sim /src/target/release/chaindeal-bulk /usr/local/bin/
 ENV BIND_ADDR=0.0.0.0:8080
 USER 10001
-EXPOSE 8080
+EXPOSE 8080 9090
 CMD ["chaindeal-backend"]
 
 FROM debian:bookworm-slim AS auth

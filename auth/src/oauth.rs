@@ -5,7 +5,7 @@
 //!   SPA ──token(code, code_verifier)──▶ { access_token (5 min, memory only), id_token }
 //!                                        + refresh token in an HttpOnly cookie (never readable by JS)
 //!   SPA ──token(grant_type=refresh_token)──▶ rotated refresh + new access token; reuse ⇒ family revoked
-//! Service flow (confidential `chaindeal-seed`): client_credentials.
+//! Service flow (confidential `chaindeal-seed`, `chaindeal-sim`): client_credentials.
 
 use std::sync::Arc;
 
@@ -368,7 +368,15 @@ pub async fn token(State(a): S, h: HeaderMap, Form(f): Form<TokenForm>) -> Resul
         }
         "client_credentials" => {
             let (id, secret) = basic_auth(&h).or_else(|| Some((f.client_id.clone()?, f.client_secret.clone()?))).ok_or_else(|| bad("invalid_client", "client authentication required"))?;
-            let ok = id == SEED_CLIENT && a.seed_secret_hash.as_deref().is_some_and(|hsh| crypto::ct_eq(hsh, &crypto::hash_secret(&secret)));
+            // Confidential service clients; each has its own secret.
+            let (hash, name) = match id.as_str() {
+                SEED_CLIENT => (&a.seed_secret_hash, "seed service"),
+                SIM_CLIENT => (&a.sim_secret_hash, "market simulator"),
+                _ => (&None, ""),
+            };
+            // Hash first, so unknown clients cost the same as known ones.
+            let presented = crypto::hash_secret(&secret);
+            let ok = hash.as_deref().is_some_and(|hsh| crypto::ct_eq(hsh, &presented));
             if !ok {
                 a.audit("client_auth_failed", None, &ip, json!({ "client": id })).await;
                 return Err(ApiError(StatusCode::UNAUTHORIZED, "invalid_client", "client authentication failed".into()));
@@ -377,9 +385,9 @@ pub async fn token(State(a): S, h: HeaderMap, Form(f): Form<TokenForm>) -> Resul
             let scope: Vec<&str> = f.scope.as_deref().unwrap_or("deals:write tx:any").split_whitespace().filter(|s| allowed.contains(s)).collect();
             let t = now();
             let token = a.signer.sign(&chaindeal_authn::Claims {
-                iss: a.iss.clone(), sub: format!("client:{SEED_CLIENT}"), aud: chaindeal_authn::API_AUDIENCE.into(),
+                iss: a.iss.clone(), sub: format!("client:{id}"), aud: chaindeal_authn::API_AUDIENCE.into(),
                 exp: t + ACCESS_TTL, nbf: t, iat: t, jti: crypto::random_id(), scope: scope.join(" "),
-                client_id: SEED_CLIENT.into(), roles: vec![], wallets: vec![], sid: String::new(), name: "seed service".into(),
+                client_id: id.clone(), roles: vec![], wallets: vec![], sid: String::new(), name: name.into(),
             });
             Ok(token_response(json!({ "access_token": token, "token_type": "Bearer", "expires_in": ACCESS_TTL, "scope": scope.join(" ") }), None))
         }

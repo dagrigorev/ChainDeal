@@ -1,0 +1,8 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Local stack (backend + auth + web)" type="CompoundRunConfigurationType" folderName="ChainDeal dev">
+    <toRun name="backend -&gt; cluster" type="CargoCommandRunConfiguration" />
+    <toRun name="auth -&gt; cluster" type="CargoCommandRunConfiguration" />
+    <toRun name="web -&gt; local backend + auth" type="js.build_tools.npm" />
+    <method v="2" />
+  </configuration>
+</component>

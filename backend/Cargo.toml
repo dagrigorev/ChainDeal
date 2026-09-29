@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+dotenvy.workspace = true
 chaindeal-core = { path = "../crates/core" }
 chaindeal-authn = { path = "../crates/authn" }
 ed25519-dalek.workspace = true
@@ -22,3 +23,15 @@ anyhow = "1"
 futures = "0.3"
 rand = "0.8"
 tokio-stream = { version = "0.1", features = ["sync"] }
+# gRPC: the Ledger streaming service (native gRPC + gRPC-Web) and its clients.
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-web = "0.14"
+tonic-reflection = "0.14"
+prost = "0.14"
+
+[build-dependencies]
+# Compiles proto/ in pure Rust: no protoc needed on the host or in Docker.
+tonic-prost-build = "0.14"
+protox = "0.9"
+prost = "0.14"
