@@ -1,12 +1,27 @@
 # Stateless API nodes. One wins the leader lease (in Tarantool) and mines
-# blocks + runs the simulator; all serve the API and SSE. Kill the leader and
-# another takes over within ~6s.
+# blocks; all serve the REST API and the gRPC LedgerService. Kill the leader
+# and another takes over within ~6s.
 apiVersion: v1
 kind: Service
 metadata: { name: backend }
 spec:
   selector: { app: backend }
-  ports: [{ name: http, port: 8080 }]
+  ports:
+    - { name: http, port: 8080 }
+    # Native gRPC for services in the cluster (the simulator).
+    - { name: grpc, port: 9090, appProtocol: kubernetes.io/h2c }
+---
+# The same pods' gRPC port for the ingress: Traefik speaks cleartext HTTP/2
+# (h2c) to it, and browsers reach it as gRPC-Web over TLS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-grpc
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: h2c
+spec:
+  selector: { app: backend }
+  ports: [{ name: grpc, port: 9090 }]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -54,7 +69,9 @@ spec:
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - { name: CHAINDEAL_SIM_RATE, value: "10" }
             - { name: RUST_LOG, value: "info,tower_http=warn" }
-          ports: [{ name: http, containerPort: 8080 }]
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: grpc, containerPort: 9090 }
           readinessProbe:
             httpGet: { path: /api/health, port: http }
             periodSeconds: 5

@@ -2,7 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api, ApiError } from './api';
 import { currentClaims } from './auth';
 import { ACTION_LABEL, STATUS_LABEL } from './format';
-import type { Account, Action, PartyKind, Transition, TxRecord } from './types';
+import { ledger, toNodeEvent, type NodeEvent } from './ledger';
+import type { Account, Action, PartyKind, TxRecord } from './types';
 import { signAction, walletFromSecret, type Keypair } from './wasm';
 
 export interface LocalWallet extends Keypair { label: string; kind?: PartyKind }
@@ -10,12 +11,10 @@ export interface LocalWallet extends Keypair { label: string; kind?: PartyKind }
 export interface FeedItem { id: number; at: number; kind: 'block' | 'rejected' | 'pending' | 'refused' | 'transition'; text: string; link?: string }
 export interface Toast { id: number; tone: 'info' | 'ok' | 'err'; text: string }
 
-/** Raw node event (SSE), for pages that visualise the live stream. */
-export type NodeEvent =
-  | { type: 'block'; height: number; hash: string; tx_count: number; rejected: number; transitions: Transition[]; accounts: string[] }
-  | { type: 'pending'; hash: string; action: string }
-  | { type: 'refused'; error: string }
-  | { type: 'rejected'; hash: string; from: string; error: string };
+export type { NodeEvent, StreamTx } from './ledger';
+
+/** State of the gRPC-Web event stream (read on demand; changes ~10×/s). */
+export interface StreamInfo { up: boolean; seq: bigint; events: number; reconnects: number; since: number }
 
 interface Ctx {
   wallets: LocalWallet[];
@@ -40,6 +39,8 @@ interface Ctx {
   busy: boolean;
   /** Subscribe to raw node events; returns an unsubscribe function. */
   subscribe(fn: (e: NodeEvent) => void): () => void;
+  /** Current state of the live stream. */
+  streamInfo(): StreamInfo;
 }
 
 const C = createContext<Ctx | null>(null);
@@ -88,6 +89,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const waiters = useRef(new Map<string, Waiter>());
   const listeners = useRef(new Set<(e: NodeEvent) => void>());
   const seq = useRef(0);
+  const stream = useRef<StreamInfo>({ up: false, seq: 0n, events: 0, reconnects: 0, since: Date.now() });
 
   // --- lazy account cache ------------------------------------------------------
   const known = useRef(new Set<string>()); // requested at least once
@@ -162,12 +164,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     else w.reject(new Error(rec.error ?? 'transaction rejected'));
   }, []);
 
+  // Live feed: the gRPC-Web Watch stream (LedgerService.Watch) from whichever
+  // chain node the ingress picks. Every event carries the cluster-wide sequence
+  // number, so a reconnect resumes exactly where the last stream stopped.
   useEffect(() => {
-    let es: EventSource | null = null;
-    let lastMsg = Date.now();
-    const onMessage = (m: MessageEvent) => {
-      lastMsg = Date.now();
-      const ev = JSON.parse(m.data) as NodeEvent;
+    const onEvent = (ev: NodeEvent) => {
       for (const fn of listeners.current) fn(ev);
       if (ev.type === 'block') {
         setHeight(ev.height);
@@ -194,23 +195,52 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         for (const h of waiters.current.keys()) settle(h);
       }
     };
-    const connect = () => {
-      es?.close();
-      lastMsg = Date.now();
-      api.stats().then((s) => setHeight(s.height)).catch(() => {});
-      es = new EventSource('/api/events');
-      es.onmessage = onMessage;
-    };
-    connect();
-    // A proxy can keep a dead stream open after the node restarts, so
-    // reconnect if nothing has arrived for a while. Also settle submissions
-    // in case an event was missed.
+
+    let stopped = false;
+    let ac = new AbortController();
+    let lastMsg = Date.now();
+    (async () => {
+      let backoff = 500;
+      while (!stopped) {
+        ac = new AbortController();
+        const s = stream.current;
+        // After a long gap (sleep, network loss) skip the backlog and refetch instead.
+        const resume = s.seq > 0n && Date.now() - lastMsg < 60_000;
+        if (!resume) api.stats().then((st) => setHeight(st.height)).catch(() => {});
+        try {
+          const events = ledger.watch({ afterSeq: resume ? s.seq : 0n, withTransactions: true }, { signal: ac.signal });
+          for await (const raw of events) {
+            if (!s.up) {
+              s.up = true;
+              s.since = Date.now();
+            }
+            backoff = 500;
+            lastMsg = Date.now();
+            s.seq = raw.seq;
+            s.events++;
+            const ev = toNodeEvent(raw);
+            if (ev) onEvent(ev);
+          }
+        } catch {
+          /* aborted, node restarting, or network: reconnect below */
+        }
+        s.up = false;
+        if (stopped) return;
+        s.reconnects++;
+        await new Promise((r) => setTimeout(r, backoff));
+        backoff = Math.min(backoff * 2, 10_000);
+      }
+    })();
+    // A proxy can keep a dead stream open after the node goes away, so restart
+    // it if nothing has arrived for a while. Also settle submissions in case an
+    // event was missed.
     const poll = setInterval(() => {
       for (const h of waiters.current.keys()) settle(h);
-      if (Date.now() - lastMsg > 20_000) connect();
+      if (stream.current.up && Date.now() - lastMsg > 20_000) ac.abort();
     }, 3000);
     return () => {
-      es?.close();
+      stopped = true;
+      ac.abort();
       clearInterval(poll);
     };
   }, [pushFeed, settle, enqueue]);
@@ -260,6 +290,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [active, toast, enqueue],
   );
 
+  // Stable identities: pages subscribe in effects keyed on these.
+  const subscribe = useCallback((fn: (e: NodeEvent) => void) => {
+    listeners.current.add(fn);
+    return () => {
+      listeners.current.delete(fn);
+    };
+  }, []);
+  const streamInfo = useCallback(() => stream.current, []);
+
   const value = useMemo<Ctx>(
     () => ({
       wallets,
@@ -287,12 +326,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       toast,
       submit,
       busy: inflight > 0,
-      subscribe: (fn) => {
-        listeners.current.add(fn);
-        return () => listeners.current.delete(fn);
-      },
+      subscribe,
+      streamInfo,
     }),
-    [wallets, active, directory, height, version, feed, toasts, toast, submit, inflight, enqueue],
+    [wallets, active, directory, height, version, feed, toasts, toast, submit, inflight, enqueue, subscribe, streamInfo],
   );
 
   return <C.Provider value={value}>{children}</C.Provider>;

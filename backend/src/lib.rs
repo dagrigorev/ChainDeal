@@ -9,5 +9,6 @@ pub mod authz;
 pub mod chain;
 pub mod db;
 pub mod documents;
+pub mod grpc;
 pub mod sim;
 pub mod synth;

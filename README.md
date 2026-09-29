@@ -7,7 +7,8 @@ Individuals and businesses agree terms, lock value in on-chain custody, and rele
 
 | | |
 |---|---|
-| **Backend** | Rust (Axum, Tokio): chain nodes with leader election, block production and a live market simulator |
+| **Backend** | Rust (Axum, Tokio): chain nodes with leader election and block production; a separate market simulator service |
+| **Streaming** | gRPC `LedgerService` (tonic): native gRPC between services, **gRPC-Web** to the browser, resumable event and block streams |
 | **Identity** | Rust `chaindeal-auth` microservice: OAuth 2.1 / OpenID Connect, PKCE, rotating refresh tokens, user management |
 | **Database** | Tarantool 3: a replicated set for the chain (master + read replica) and a separate instance for identity |
 | **Frontend** | React + TypeScript, plus a **Rust wallet compiled to WebAssembly** that signs and verifies in the browser with the node's own code |
@@ -21,13 +22,14 @@ Individuals and businesses agree terms, lock value in on-chain custody, and rele
 3. [Quick start](#quick-start)
 4. [Repository layout](#repository-layout)
 5. [How it works: code walkthrough](#how-it-works-code-walkthrough)
-6. [Contract documents](#contract-documents)
-7. [Security model](#security-model)
-8. [Operations](#operations)
-9. [API reference](#api-reference)
-10. [Configuration](#configuration)
-11. [Testing](#testing)
-12. [Limitations](#limitations)
+6. [gRPC streaming](#grpc-streaming)
+7. [Contract documents](#contract-documents)
+8. [Security model](#security-model)
+9. [Operations](#operations)
+10. [API reference](#api-reference)
+11. [Configuration](#configuration)
+12. [Testing](#testing)
+13. [Limitations](#limitations)
 
 ---
 
@@ -58,6 +60,10 @@ The **Custody Bridge** is the signature view: value is an ingot whose *position 
 Every state change sealed in a block flies across the state machine as a particle: brass while in progress, green when settled, red when a deal fails. Counts are live totals across the whole chain. The controls change the simulator cluster-wide and require the `operator` role.
 
 ![Live market, full page](docs/screenshots/10-live-market-full.png)
+
+Every confirmed transaction also arrives in the browser over **gRPC-Web** with its signed body, and its ed25519 signature is re-verified there by the Rust wallet compiled to WebAssembly:
+
+![Transaction stream over gRPC-Web](docs/screenshots/22-grpc-transaction-stream.png)
 
 ### Ledger, directory and wallet
 
@@ -96,25 +102,33 @@ The **Admin** page lets you manage users, roles, suspension, unlocking and delet
 ## Architecture
 
 ```
-                              https://chaindeal.localhost
-                                           │  :80 → 301 → :443 (TLS, HTTP/2)
-┌──────────────────────────────── Docker Desktop Kubernetes (3 nodes) ───────────────────────────────┐
-│  namespace ingress          ┌────────────────────────────────────────┐                             │
-│                             │  Traefik ×2  (Docker Desktop LoadBalancer) │                             │
-│                             └───────┬───────────────┬───────────┬─────┘                             │
-│  namespace chaindeal         /      │      /oauth   │    /api   │   (NetworkPolicies: default deny)   │
-│              ┌──────────────────────▼┐  ┌───────────▼──────┐ ┌──▼────────────────────────────────┐   │
-│              │ frontend ×2 (nginx)   │  │ auth ×2          │ │ backend ×3 (Rust chain nodes)     │   │
-│              │ CSP · HSTS · SPA      │  │ OAuth 2.1 / OIDC │◀┤ lease → 1 leader mines + simulates│   │
-│              └───────────────────────┘  │ users · wallets  │ │ verifies tokens via JWKS          │   │
-│                                         └────────┬─────────┘ └────┬─────────────────┬───────────┘   │
-│                                                  │ only auth      │ writes          │ reads         │
-│                                         ┌────────▼────────┐ ┌─────▼───────────┐ ┌──▼──────────────┐ │
-│                                         │ auth-db         │ │ tarantool-0     │─▶│ tarantool-1     │ │
-│                                         │ (identity only) │ │ master (rw)     │WAL│ replica (ro)    │ │
-│                                         └─────────────────┘ └─────────────────┘ └─────────────────┘ │
+                               https://chaindeal.localhost
+                                          │  :80 → 301 → :443 (TLS, HTTP/2)
+┌─────────────────────────────── Docker Desktop Kubernetes (3 nodes) ────────────────────────────────┐
+│ namespace ingress       ┌──────────────────────────────────────────────┐                           │
+│                         │ Traefik ×2 (Docker Desktop LoadBalancer)     │                           │
+│                         └──┬──────────┬───────────────┬─────────────┬──┘                           │
+│ namespace chaindeal      / │   /oauth │          /api │             │ /chaindeal.v1.LedgerService  │
+│ (NetworkPolicies:          │          │               │             │ gRPC-Web → h2c :9090         │
+│  default deny)             │          │               │             │                              │
+│          ┌─────────────────▼──┐ ┌─────▼────────────┐ ┌▼─────────────▼─────────────────┐            │
+│          │ frontend ×2        │ │ auth ×2          │ │ backend ×3 (Rust chain nodes)  │            │
+│          │ nginx · CSP · SPA  │ │ OAuth 2.1 / OIDC │◀┤ REST :8080 · gRPC :9090        │            │
+│          └────────────────────┘ │ users · wallets  │ │ lease → 1 leader mines blocks  │            │
+│                                 └──┬───────────▲───┘ └──▲─────────────┬─────────┬─────┘            │
+│                                    │     token │        │ SubmitTxs   │ writes  │ reads            │
+│                                    │  ┌────────┴────────┴──┐          │         │                  │
+│                                    │  │ chaindeal-sim      │  ┌───────▼─────┐ ┌─▼───────────┐      │
+│                                    │  │ market simulator   │  │ tarantool-0 │▶│ tarantool-1 │      │
+│                                    │  │ (gRPC client)      │  │ master (rw) │ │ replica (ro)│      │
+│                                    │  └────────────────────┘  └─────────────┘ └─────────────┘      │
+│                           ┌────────▼────────┐                                                      │
+│                           │ auth-db         │                                                      │
+│                           │ (identity only) │                                                      │
+│                           └─────────────────┘                                                      │
 └────────────────────────────────────────────────────────────────────────────────────────────────────┘
-      Browser: React UI + wallet.wasm (Rust: keys, signing, contract preview, block verification)
+      Browser: React UI + wallet.wasm (Rust: keys, signing, contract preview, block and tx verification)
+               live feed = LedgerService.Watch over gRPC-Web (protobuf, resumable by sequence number)
 ```
 
 Replicas are spread across the two worker nodes, and the spread is required, not merely preferred:
@@ -127,6 +141,7 @@ chaindeal   auth-db-0                   desktop-worker2
 chaindeal   backend-7cbd749485-5dvtm    desktop-worker2
 chaindeal   backend-7cbd749485-6gdmg    desktop-worker
 chaindeal   backend-7cbd749485-d8l42    desktop-worker
+chaindeal   chaindeal-sim-854764ccd6-mzdt2  desktop-worker2
 chaindeal   frontend-6dd6bd46c-2c7pw    desktop-worker
 chaindeal   frontend-6dd6bd46c-8cd78    desktop-worker2
 chaindeal   tarantool-0                 desktop-worker
@@ -136,10 +151,10 @@ ingress     traefik-58758ffdd7-smsc6    desktop-worker
 ```
 
 **Transaction lifecycle.**
-1. The browser signs an action with the WASM wallet and sends it with a Bearer token.
+1. The browser signs an action with the WASM wallet and sends it with a Bearer token (`POST /api/tx`). Services stream theirs over gRPC instead (`LedgerService.SubmitTxs`), one receipt per transaction.
 2. Any backend pod verifies the token (JWKS) and the ed25519 signature, dry-runs the contract on top of the mempool, and queues the transaction in Tarantool.
 3. Every 2 s, the **leader** drains the mempool. It applies each transaction with the same contract code, mines a PoW block, and commits the block, transactions, accounts and deals in **one** Tarantool transaction.
-4. The block event goes onto a shared log that every pod tails, so SSE clients on any pod see it.
+4. The block event goes onto a shared log that every pod tails, so gRPC `Watch` clients on any pod see it, with the block's transactions attached.
 
 ---
 
@@ -177,15 +192,19 @@ crates/authn/         EdDSA JWT issue/verify, JWKS types, wallet-link message (u
 crates/wallet-wasm/   wasm-bindgen exports: keygen, signing, link proofs, contract quotes, block verification,
                       document checks, QR codes
 backend/src/
-  main.rs             node bootstrap: connections, leader/bus/producer/simulator tasks, HTTP server
-  api.rs              chain REST API + SSE, token authorization, security headers
+  main.rs             node bootstrap: connections, leader/bus/producer tasks, REST + gRPC servers
+  api.rs              chain REST API (+ legacy SSE), token authorization, security headers
+  grpc.rs             gRPC LedgerService: Watch, FollowBlocks, SubmitTxs; the SubmitTxs client
   authz.rs            access-token verification against the auth service's JWKS
   chain.rs            admission, block production, parallel PoW, leader lease, event bus, metrics, verification
   documents.rs        contract documents: build the record from the chain, attest, verify
   db.rs               Tarantool client (master + read pool), JSON⇄MessagePack bridge
-  sim.rs              live market simulator (leader-only, config shared via Tarantool)
+  sim.rs              live market simulator (lease-gated) and SimControl (config shared via Tarantool)
   synth.rs            synthetic economy: agents, catalogs, scenario mix, the deal "director"
+  bin/chaindeal-sim.rs    the simulator service: OAuth client credentials + gRPC transaction stream
   bin/chaindeal-bulk.rs   1M-transaction history generator (a real signed, mined chain)
+  build.rs            generates the gRPC code from proto/ in pure Rust (protox: no protoc needed)
+proto/chaindeal/v1/ledger.proto   the gRPC contract (buf-linted); TypeScript in frontend/src/gen
 auth/src/
   main.rs             identity service bootstrap, routes, security headers, bootstrap admin
   oauth.rs            discovery, JWKS, authorize, login/register, token, logout, userinfo
@@ -199,18 +218,21 @@ frontend/src/
   lib/wasm.ts         typed façade over the WASM wallet
   lib/docfmt.ts       RU/US amounts in words, dates and numbers for contracts
   lib/auth.tsx        OAuth 2.1 PKCE client (memory tokens, silent refresh)
-  lib/store.tsx       app state: wallets, lazy account cache, SSE with watchdog, signed submissions
+  lib/ledger.ts       gRPC-Web client (Connect) for LedgerService, protobuf → UI events
+  lib/store.tsx       app state: wallets, lazy account cache, resumable gRPC-Web feed, signed submissions
+  gen/                generated protobuf/gRPC code (`make proto`)
   components/Bridge.tsx   the Custody Bridge (signature view) + MoneyTrack
   pages/              Desk, Deals, DealDetail, NewDeal, Live, Explorer, Accounts, Wallet, Account, Admin,
                       Document (RU/US contract forms), Verify
 frontend/scripts/screenshots.mjs   drives Chrome through the product to produce docs/screenshots
 frontend/scripts/examples.mjs      prints example contracts to PDF and captures verification into docs/examples
+frontend/scripts/grpc-e2e.mjs      end-to-end checks of the gRPC service over gRPC and gRPC-Web
 deploy/
   certs.sh            name-constrained local CA + TLS certificate
   nginx/              frontend server config and security headers
   k8s/ingress/        Traefik (RBAC, Deployment, LoadBalancer, PDB)
   k8s/base/           namespace, Tarantool StatefulSets, auth-db, secrets, NetworkPolicies
-  k8s/app/            backend, auth, frontend Deployments, PDBs, Ingress
+  k8s/app/            backend, auth, frontend, chaindeal-sim Deployments, PDBs, Ingress (incl. gRPC routes)
   k8s/jobs/bulk.yaml  history loader Job
 scripts/
   seed.mjs            demo parties + deals (machine OAuth client)
@@ -293,7 +315,7 @@ Designed for 1M rows:
 
 Any number of stateless API nodes share one Tarantool master:
 
-- **Leader election** uses a lease row in Tarantool (TTL 6 s, renewed every 2 s). The leader mines and runs the simulator. On SIGTERM it hands the lease back, so failover takes about 1.3 s; after a crash, the lease expires within 6 s.
+- **Leader election** uses a lease row in Tarantool (TTL 6 s, renewed every 2 s). The leader mines. On SIGTERM it hands the lease back, so failover takes about 1.3 s; after a crash, the lease expires within 6 s.
 
 ```lua
 function cd_lease(name, holder, ttl)
@@ -307,7 +329,7 @@ function cd_lease(name, holder, ttl)
 end
 ```
 
-- **Shared event bus.** Each node publishes its events to an `events` space and tails it every 200 ms into its own SSE subscribers. A browser connected to *any* pod sees blocks produced by the leader.
+- **Shared event bus.** Each node publishes its events to an `events` space and tails it every 200 ms into its own gRPC `Watch` streams. Every event keeps its log sequence number, so a client that reconnects to *another* pod resumes exactly where it stopped. A browser connected to any pod sees blocks produced by the leader.
 - **Shared metrics and settings.** Per-second throughput counters are upserted by every node. Simulator config and snapshots live in a `kv` space, so the controls work through any pod.
 - **Read scaling.** List, search, stats and verification queries use `tarantool-read` (master + replica). Writes use `tarantool-rw`. The replica streams the master's WAL; lag is shown in the Cluster panel.
 
@@ -319,7 +341,7 @@ end
 - **The director.** A function that reads the deal's **actual** on-chain state and returns the next step. A refused transaction (for example, insufficient funds) naturally turns into a failure path.
 - **Two consumers.**
   - [chaindeal-bulk](backend/src/bin/chaindeal-bulk.rs) writes a week of history: 1M transactions in about 190 s, as real signed and mined blocks.
-  - [sim.rs](backend/src/sim.rs) runs on the leader at 10 tx/s through the normal admission path, adopting open deals after restarts or failover.
+  - [sim.rs](backend/src/sim.rs) runs as its own service, [chaindeal-sim](backend/src/bin/chaindeal-sim.rs), at 10 tx/s. It streams every transaction to the nodes over gRPC and adopts open deals after restarts or failover. A lease keeps one instance active.
 
 ### 6. Identity service and API authorization
 
@@ -365,6 +387,62 @@ if !owns && !c.has_scope("tx:any") { return Err(forbid("this wallet is not linke
 - **[Bridge.tsx](frontend/src/components/Bridge.tsx).** The Custody Bridge is a pure function of the deal. `fundsPosition()` in [lib/deal.ts](frontend/src/lib/deal.ts) maps contract state to where the value sits. CSS transitions animate the ingot only when a live block changes the state; the seal stamps only then, never on page load.
 - **[Live.tsx](frontend/src/pages/Live.tsx).** Draws the state-machine graph in SVG with a DPR-aware canvas layer for particles. Transitions from each block are spread across the block interval. It respects `prefers-reduced-motion`.
 - **[store.tsx](frontend/src/lib/store.tsx).** A lazily filled account cache that refreshes only the accounts a block touched. SSE events are buffered, and a watchdog reconnects a stalled stream.
+
+### Debugging in RustRover
+
+The repository ships shared run configurations in [.run/](.run), shown under **ChainDeal dev** in the run widget. They connect a locally built, debuggable service to the running cluster with no manual setup:
+
+| Configuration | What it does |
+|---|---|
+| **backend -> cluster** | Debug a chain node on `127.0.0.1:8080` (gRPC on `:9090`). It joins the cluster as the follower `local-debug`, so breakpoints never stall block production |
+| **auth -> cluster** | Debug the identity service on `127.0.0.1:8081` against the cluster's `auth-db`. It uses the same signing key, so its tokens are valid everywhere |
+| **web -> local backend** | Vite on `:5173` sending `/api` and the gRPC-Web stream to the local node, and sign-in to the cluster |
+| **web -> local backend + auth** | The same, with `/oauth` going to the local auth service |
+| **Local stack (backend + auth + web)** | All three together; press **Debug** to debug both Rust services at once |
+| **cluster: connect / disconnect** | The before-launch step, and teardown |
+
+Before each Rust configuration starts, **cluster: connect** runs [scripts/dev-cluster.sh](scripts/dev-cluster.sh) (also available as `make dev-up`). The script is idempotent and returns in under a second when everything is already up. It does two things:
+- It keeps detached, self-reconnecting `kubectl port-forward`s on loopback: `3301` chain master, `3311` read replica, `3302` `auth-db`, and `18081` the in-cluster auth service for JWKS.
+- It writes `target/dev/backend.env` and `target/dev/auth.env` (mode 600, gitignored) from `deploy/k8s/.secrets`.
+
+The binaries load that file when `CHAINDEAL_ENV_FILE` is set, which is the only variable the run configurations carry. That way no secret ends up in IDE settings.
+
+- To debug leadership, block production or the simulator, delete `CHAINDEAL_ROLE=follower` from `target/dev/backend.env` (it is rewritten on the next launch). The local node then competes for the lease. While it is paused on a breakpoint, a cluster node takes over after the lease expires.
+- Stop `make web` before starting a **web** configuration: sign-in redirects only to `http://localhost:5173`.
+- Dependencies are built with `opt-level = 2` in the dev profile, so a debug build keeps up with the live chain, while the workspace crates stay unoptimised for stepping.
+- Plain terminal equivalent: `make dev-up`, then `CHAINDEAL_ENV_FILE=target/dev/backend.env cargo run -p chaindeal-backend`.
+
+---
+
+## gRPC streaming
+
+Transaction data moves between services, and out to browsers, through one gRPC contract: [proto/chaindeal/v1/ledger.proto](proto/chaindeal/v1/ledger.proto). Every chain node serves it on port 9090 ([grpc.rs](backend/src/grpc.rs), tonic).
+
+| RPC | Kind | What streams |
+|---|---|---|
+| `Watch(after_seq, with_transactions)` | server stream | Every admission, refusal, rejection, sealed block (with deal transitions, touched accounts and optionally every signed transaction) and leader change. Resumable: pass the last `seq` seen |
+| `FollowBlocks(from_height, to_height)` | server stream | Committed blocks with their full transactions: catch-up from any height (read replica), then live. Backpressured, so a slow consumer throttles the catch-up |
+| `SubmitTxs(stream SubmitTxsRequest)` | bidirectional | Signed transactions in, one `TxReceipt` out per transaction (`ADMITTED`, `INVALID`, `REJECTED`, `FORBIDDEN`, `ERROR`), matched by `ref` |
+
+```
+ chaindeal-sim ──SubmitTxs (native gRPC, HTTP/2, Bearer: chaindeal-sim client)──▶ backend:9090 ──▶ mempool
+                ◀────────────── TxReceipt per transaction ──────────────────────
+ browser ──Watch (gRPC-Web over TLS)──▶ Traefik ──h2c──▶ backend-grpc:9090 ◀── shared event log (Tarantool)
+ tools   ──FollowBlocks / Watch (native gRPC over TLS, reflection enabled)──▶ same route
+```
+
+- **One contract, two transports.** Services use native gRPC over HTTP/2. Browsers can't, so the same server also speaks **gRPC-Web** (`tonic-web`), and Traefik forwards both to the pods as cleartext HTTP/2 (`h2c`). The UI uses [Connect](https://connectrpc.com) with generated protobuf types ([lib/ledger.ts](frontend/src/lib/ledger.ts)).
+- **Transactions stay verifiable end to end.** Each streamed `Transaction` carries `body_json`, the exact bytes the ed25519 signature covers. The Live page re-verifies every signature in the browser with the Rust wallet (WASM), and the e2e suite checks that each streamed transaction hashes to its id.
+- **No gaps on reconnect.** `Watch` subscribes to the live feed *before* replaying from the log, then deduplicates by sequence number. A lagging client falls back to the log instead of losing events. The UI resumes after node restarts and rolling updates. After more than 60 s away it skips the backlog and refetches instead.
+- **Service authorization.** `SubmitTxs` applies the same rules as `POST /api/tx`. The Bearer token is checked when the stream opens, and its expiry is checked again on every message. The simulator is its own confidential OAuth client (`chaindeal-sim`, `client_credentials`, scopes `deals:write tx:any`). It rolls over to a fresh stream 30 s before its 5-minute token expires. It half-closes the old stream and drains the remaining receipts, so nothing in flight is lost.
+- **Graceful shutdown.** On SIGTERM a node ends its open streams with `UNAVAILABLE`, and clients reconnect to another pod at once.
+- **Codegen without protoc.** Rust code is generated at build time by [backend/build.rs](backend/build.rs) with `protox`, a pure-Rust protobuf compiler, so neither the host nor the Docker build needs `protoc`. TypeScript is generated by `make proto` (buf + protoc-gen-es) and committed. The proto passes `buf lint` (STANDARD).
+
+Try it with [grpcurl](https://github.com/fullstorydev/grpcurl) (server reflection is on):
+
+```bash
+grpcurl -cacert deploy/certs/ca.crt -d '{"with_transactions": true}' chaindeal.localhost:443 chaindeal.v1.LedgerService/Watch
+```
 
 ---
 
@@ -443,6 +521,7 @@ The code: record types, hashing, Merkle proofs and attestation live in [crates/c
 | **Authorization** | Scopes derived from roles (`user`, `operator`, `admin`). Admin actions re-check roles in the database. Role changes, suspension and deletion sign the user out everywhere. Transactions must come from **linked** wallets |
 | **Cluster** | `restricted` Pod Security in both namespaces. Non-root, read-only root filesystems, all capabilities dropped, no service-account tokens. **NetworkPolicies**: default deny; only the API and bulk job reach the chain DB; only auth reaches `auth-db` |
 | **Secrets** | Randomly generated into `deploy/k8s/.secrets/` (mode 600, gitignored) and mounted as Kubernetes Secrets. Demo private keys are stripped from images |
+| **gRPC** | `SubmitTxs` requires a Bearer token with `deals:write`, a linked sender wallet or `tx:any`, and an unexpired token on every message. Services have their own OAuth client secrets. Port 9090 accepts traffic only from the ingress and the simulator (NetworkPolicy) |
 | **Documents** | Contracts are signed with an Ed25519 attestation key held in a Kubernetes Secret and bound to the ledger's genesis hash. Verification rebuilds the record from the chain, so an edited or forged document is rejected |
 | **Audit** | Logins, failures, lockouts, token reuse, wallet links, password and admin changes, visible on the Admin page |
 
@@ -460,9 +539,11 @@ The code: record types, hashing, Merkle proofs and attestation live in [crates/c
 | `make k8s-down` | Remove ChainDeal from the cluster (data included; the cluster stays) |
 | `make db-reset` | Wipe the chain in-cluster and reload the history (`TXS=…`) |
 | `make db-forward` / `make backend` | Port-forward the Tarantool master and run an extra node locally (it joins as a follower) |
+| `make dev-up` / `make dev-down` | Port-forwards and env files for running or debugging services locally (see [Debugging in RustRover](#debugging-in-rustrover)) |
 | `make web` / `make seed` / `make screenshots` | Dev UI, demo data, documentation screenshots |
 | `make examples` | Regenerate the example contracts (RU/US PDFs, previews) and verification screenshots in `docs/examples` |
-| `make test` / `make auth-test` | Unit tests + type check / 68 live security checks |
+| `make test` / `make auth-test` / `make grpc-test` | Unit tests + type check / 68 live security checks / 50 live gRPC checks |
+| `make proto` | Regenerate the TypeScript gRPC client after editing `proto/` (Rust regenerates on build) |
 
 Try a failover: open the Live page, then `kubectl -n chaindeal delete pod <leader>`. The Cluster panel shows another node take over within about 1.3 s, and blocks keep coming.
 
@@ -486,7 +567,9 @@ Chain API (`/api`, served by any backend pod):
 | GET | `/api/deals/:id/document` | the deal as a contract record, with its number, hash, market attestation and verify link |
 | GET | `/api/documents/verify?deal=&hash=&sig=` | verify a document against the ledger: signature, content, block proofs |
 | GET | `/api/attestation` | the market's attestation public key, key id and chain id |
-| GET | `/api/events` | SSE: `pending`, `refused`, `rejected`, `block` (with deal transitions), `leader` |
+| GET | `/api/events` | Legacy SSE with the same events as `Watch` (JSON, `id:` = sequence number). The UI uses gRPC |
+| gRPC | `chaindeal.v1.LedgerService/Watch`, `/FollowBlocks` | server streams (see [gRPC streaming](#grpc-streaming)); gRPC-Web at the same path through the ingress |
+| gRPC | `chaindeal.v1.LedgerService/SubmitTxs` | bidirectional transaction stream (**Bearer**, `deals:write`; native gRPC, HTTP/2) |
 
 Identity API (`/oauth`, `/.well-known`, served by the auth service):
 
@@ -508,9 +591,14 @@ Identity API (`/oauth`, `/.well-known`, served by the auth service):
 |---|---|---|
 | `TARANTOOL_ADDR` / `TARANTOOL_READ_ADDR` | `127.0.0.1:3301` / unset | backend (master / read pool) |
 | `CHAINDEAL_BLOCK_MS`, `CHAINDEAL_DIFFICULTY` | `2000`, `4` | backend |
-| `CHAINDEAL_SIM`, `CHAINDEAL_SIM_RATE`, `CHAINDEAL_SIM_PRESSURE`, `CHAINDEAL_SIM_AGENTS` | `on`, `10`, `1`, `6000` | backend simulator |
+| `GRPC_ADDR` | `0.0.0.0:9090` | backend: gRPC + gRPC-Web |
+| `CHAINDEAL_SIM`, `CHAINDEAL_SIM_RATE`, `CHAINDEAL_SIM_PRESSURE`, `CHAINDEAL_SIM_AGENTS` | `on`, `10`, `1`, `6000` | simulator defaults (chaindeal-sim; backend seeds the shared config) |
+| `LEDGER_GRPC_URL`, `AUTH_TOKEN_URL`, `SIM_CLIENT_ID`, `SIM_CLIENT_SECRET` | `http://backend:9090`, `http://auth:8080/oauth/token`, `chaindeal-sim`, Secret | chaindeal-sim |
+| `AUTH_SIM_CLIENT_SECRET` | Secret | auth: the simulator's client secret |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER` | `http://auth:8080/oauth/jwks`, `https://chaindeal.localhost` | backend token verification |
 | `CHAINDEAL_AUTH` | `on` (`off` = unprotected, loud warning) | backend |
+| `CHAINDEAL_ROLE` | `auto` (`follower` = never take the leader lease) | backend |
+| `CHAINDEAL_ENV_FILE` | unset | backend, auth: load settings from a dotenv file (local development) |
 | `CHAINDEAL_ATTESTATION_KEY` | Secret (random per node if unset, with a warning) | backend document signing (32-byte hex seed) |
 | `CHAINDEAL_CORS_ORIGINS` | unset (same-origin only) | backend |
 | `AUTH_DB_ADDR`, `AUTH_SIGNING_KEY`, `AUTH_DATA_KEY`, `AUTH_INDEX_KEY` | Secret | auth |
@@ -521,9 +609,10 @@ Identity API (`/oauth`, `/.well-known`, served by the auth service):
 
 ## Testing
 
-- **`make test`** runs 18 Rust unit tests and the TypeScript type check:
+- **`make test`** runs 20 Rust unit tests and the TypeScript type check:
   - **Chain core (12):** every lifecycle path, including the failure model, conservation of supply, hashing, signatures and Merkle roots.
   - **Documents (2):** Merkle inclusion proofs for every tree size and index, and an attestation bound to both chain and record.
+  - **gRPC (2):** log events map to protobuf; streamed transactions keep block order and verify from `body_json` alone.
   - **JWT (1):** tampering, `alg:none`, unknown keys, expiry and audience.
   - **Auth crypto (3):** the RFC 7636 PKCE vector, record-bound encryption and Argon2id.
 - **`make auth-test`** runs 68 end-to-end checks against the live cluster over TLS:
@@ -532,6 +621,11 @@ Identity API (`/oauth`, `/.well-known`, served by the auth service):
   - no account enumeration, wallet-proof forgery, and role enforcement;
   - admin self-lockout protection, account deletion and the audit trail;
   - contract documents: number derivation, genuine, altered and forged documents, deterministic re-issue.
+- **`make grpc-test`** runs 50 end-to-end checks through the TLS ingress, over native gRPC and gRPC-Web:
+  - live events and sealed blocks; every streamed transaction hashes to its id and its signature verifies;
+  - gapless resume by sequence number; `FollowBlocks` catch-up (exact range, `prev_hash` links), then live;
+  - `SubmitTxs` authorization (no token, forged token, missing scope, unlinked wallet) and per-transaction receipts (admitted, duplicate, bad signature, contract refusal, malformed);
+  - the simulator service: its own client secret, and it streams transactions with receipts.
 - **`make seed`** is also an end-to-end test of the contract and the machine OAuth client.
 - **Verify entire chain** on the Ledger page re-derives every hash, link, Merkle root and signature.
 
@@ -544,4 +638,5 @@ Identity API (`/oauth`, `/.well-known`, served by the auth service):
 - **Network exposure.** Docker Desktop publishes the LoadBalancer on **all interfaces**, so the site is reachable from your LAN. Block incoming connections for Docker in the macOS firewall, or front it with a localhost-only forwarder.
 - **Client IPs.** Docker Desktop's load balancer hides the real client address, so per-IP rate limits apply per node rather than per client. Account lockout is unaffected.
 - **Auth gaps.** No MFA and no email verification. Access tokens aren't revocable before their 5-minute expiry. Signing-key rotation isn't automated (the JWKS refresh supports it).
+- **gRPC-Web and client streams.** Browsers can only use server streams (`Watch`, `FollowBlocks`), so browser submissions stay on `POST /api/tx`. Through the proxy, gRPC-Web *client* streaming is reliable only over HTTP/2.
 - **Internal traffic.** Traffic between pods is plaintext, fenced by NetworkPolicies but without mTLS.

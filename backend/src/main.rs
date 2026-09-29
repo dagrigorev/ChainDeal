@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use axum::http::HeaderValue;
-use chaindeal_backend::{api, authz, chain, db, documents, sim};
+use chaindeal_backend::{api, authz, chain, db, documents, grpc, sim};
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -15,6 +15,11 @@ fn env(key: &str, default: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Local development: settings and secrets from a file written by
+    // scripts/dev-cluster.sh (variables already set take precedence).
+    if let Ok(path) = std::env::var("CHAINDEAL_ENV_FILE") {
+        dotenvy::from_path(&path).map_err(|e| anyhow::anyhow!("CHAINDEAL_ENV_FILE {path}: {e} (run scripts/dev-cluster.sh up)"))?;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower_http=warn".into()))
         .init();
@@ -34,7 +39,11 @@ async fn main() -> Result<()> {
     // In Kubernetes the pod name is a stable, unique node id.
     let node_id = env("CHAINDEAL_NODE_ID", &env("HOSTNAME", "node-1"));
     let difficulty = env("CHAINDEAL_DIFFICULTY", &chaindeal_core::DEFAULT_DIFFICULTY.to_string()).parse()?;
-    let node = Arc::new(chain::Node::new(db, node_id.clone(), difficulty));
+    let follower_only = env("CHAINDEAL_ROLE", "auto") == "follower";
+    if follower_only {
+        tracing::info!("CHAINDEAL_ROLE=follower: this node never leads (no block production or simulator)");
+    }
+    let node = Arc::new(chain::Node::new(db, node_id.clone(), difficulty).follower_only(follower_only));
 
     // Cluster plumbing: leader lease + heartbeat, and the shared event/metrics bus.
     tokio::spawn(node.clone().run_leadership());
@@ -45,18 +54,17 @@ async fn main() -> Result<()> {
     let producer = node.clone();
     tokio::spawn(async move { producer.run_producer(interval).await });
 
-    // Live market simulator, also leader-only; controllable via /api/sim.
-    let sim = sim::Sim::new(
-        node.clone(),
-        env("CHAINDEAL_SIM_AGENTS", "6000").parse()?,
+    // The market simulator runs as its own service (chaindeal-sim); nodes only
+    // serve and change its shared config through /api/sim.
+    let sim = Arc::new(sim::SimControl::new(
+        node.db.clone(),
         sim::SimConfig {
             running: env("CHAINDEAL_SIM", "on") == "on",
             rate: env("CHAINDEAL_SIM_RATE", "10").parse()?,
             pressure: env("CHAINDEAL_SIM_PRESSURE", "1").parse()?,
-            noise: 0.02,
+            ..Default::default()
         },
-    );
-    tokio::spawn(sim.clone().run());
+    ));
 
     // Access tokens come from the auth microservice. Authorization can only be
     // turned off explicitly (CHAINDEAL_AUTH=off), never by forgetting config.
@@ -72,6 +80,20 @@ async fn main() -> Result<()> {
     // Market attestation key for contract documents (shared by all nodes via a Secret).
     let docs = Arc::new(documents::Documents::new(std::env::var("CHAINDEAL_ATTESTATION_KEY").ok().filter(|k| !k.is_empty()))?);
     tracing::info!(key_id = %docs.key_id, "document attestation key loaded");
+    // gRPC LedgerService: transaction streams for services and (gRPC-Web) browsers.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let grpc_addr: std::net::SocketAddr = env("GRPC_ADDR", "0.0.0.0:9090").parse()?;
+    let grpc = tokio::spawn({
+        let (node, authz) = (node.clone(), authz.clone());
+        async move {
+            let r = grpc::serve(grpc_addr, node, authz, stop_rx).await;
+            if let Err(e) = &r {
+                tracing::error!("gRPC server failed: {e:#}");
+            }
+            r
+        }
+    });
+
     let mut app = api::router(api::AppState { node: node.clone(), sim, authz, docs });
     // Optionally serve the built frontend (compose image). In Kubernetes nginx serves it.
     if let Ok(dir) = std::env::var("STATIC_DIR") {
@@ -90,7 +112,17 @@ async fn main() -> Result<()> {
     let bind = env("BIND_ADDR", "0.0.0.0:8080");
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(node = %node_id, "ChainDeal node listening on http://{bind}");
-    axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
+    let stopping = async move {
+        shutdown().await;
+        // End open gRPC streams too, so their clients reconnect to another node.
+        let _ = stop_tx.send(true);
+    };
+    axum::serve(listener, app).with_graceful_shutdown(stopping).await?;
+    match tokio::time::timeout(Duration::from_secs(5), grpc).await {
+        Ok(Ok(Err(e))) => tracing::error!("gRPC server: {e:#}"),
+        Err(_) => tracing::warn!("gRPC server did not stop in time"),
+        _ => {}
+    }
     node.release_leadership().await;
     Ok(())
 }

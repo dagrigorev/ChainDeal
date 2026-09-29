@@ -23,6 +23,8 @@ pub const AUTHREQ_TTL: u64 = 600;
 pub const CHALLENGE_TTL: u64 = 300;
 pub const WEB_CLIENT: &str = "chaindeal-web";
 pub const SEED_CLIENT: &str = "chaindeal-seed";
+/// The market simulator service (streams transactions to the chain over gRPC).
+pub const SIM_CLIENT: &str = "chaindeal-sim";
 pub const SESSION_COOKIE: &str = "__Host-cd_session";
 pub const REFRESH_COOKIE: &str = "__Secure-cd_rt";
 pub const ROLES: [&str; 3] = ["user", "operator", "admin"];
@@ -42,6 +44,7 @@ pub struct App {
     /// Origins allowed to call token/logout from a browser (CSRF defence).
     pub origins: Vec<String>,
     pub seed_secret_hash: Option<String>,
+    pub sim_secret_hash: Option<String>,
     pub limiter: Limiter,
     /// Bounds concurrent Argon2 work (each hash uses ~19 MiB).
     pub hashing: Semaphore,

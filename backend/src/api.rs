@@ -19,12 +19,12 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use crate::authz::{forbid, Authz, Denied};
 use crate::chain::{Node, SubmitError};
 use crate::documents::Documents;
-use crate::sim::{Sim, SimPatch};
+use crate::sim::{SimControl, SimPatch};
 
 #[derive(Clone)]
 pub struct AppState {
     pub node: Arc<Node>,
-    pub sim: Arc<Sim>,
+    pub sim: Arc<SimControl>,
     /// Access-token verification; `None` only when explicitly disabled for local dev.
     pub authz: Option<Arc<Authz>>,
     /// Contract-document issuance and verification (market attestation key).
@@ -345,6 +345,6 @@ async fn cluster(State(s): State<AppState>) -> ApiResult {
 async fn events(State(s): State<AppState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let stream = BroadcastStream::new(s.node.events.subscribe())
         .filter_map(|m| m.ok())
-        .map(|m| Ok(Event::default().data(m)));
+        .map(|(seq, m)| Ok(Event::default().id(seq.to_string()).data(m)));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }

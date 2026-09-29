@@ -42,6 +42,11 @@ fn origin_of(url: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Local development: settings and secrets from a file written by
+    // scripts/dev-cluster.sh (variables already set take precedence).
+    if let Ok(path) = std::env::var("CHAINDEAL_ENV_FILE") {
+        dotenvy::from_path(&path).with_context(|| format!("CHAINDEAL_ENV_FILE {path} (run scripts/dev-cluster.sh up)"))?;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower_http=warn".into()))
         .init();
@@ -66,6 +71,7 @@ async fn main() -> Result<()> {
         redirect_uris,
         origins: origins.clone(),
         seed_secret_hash: std::env::var("AUTH_SEED_CLIENT_SECRET").ok().filter(|s| !s.is_empty()).map(|s| crypto::hash_secret(&s)),
+        sim_secret_hash: std::env::var("AUTH_SIM_CLIENT_SECRET").ok().filter(|s| !s.is_empty()).map(|s| crypto::hash_secret(&s)),
         limiter: Limiter::default(),
         hashing: Semaphore::new(4),
         dummy_hash: crypto::dummy_hash(),

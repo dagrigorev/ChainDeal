@@ -1,0 +1,17 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="web -> local backend" type="js.build_tools.npm" folderName="ChainDeal dev">
+    <package-json value="$PROJECT_DIR$/frontend/package.json" />
+    <command value="run" />
+    <scripts>
+      <script value="dev" />
+    </scripts>
+    <node-interpreter value="project" />
+    <envs>
+      <env name="CHAINDEAL_BACKEND" value="http://127.0.0.1:8080" />
+      <env name="CHAINDEAL_GRPC" value="http://127.0.0.1:9090" />
+      <env name="CHAINDEAL_AUTH" value="https://chaindeal.localhost" />
+      <env name="NODE_EXTRA_CA_CERTS" value="../deploy/certs/ca.crt" />
+    </envs>
+    <method v="2" />
+  </configuration>
+</component>

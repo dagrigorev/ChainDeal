@@ -5,6 +5,7 @@ resources:
   - backend.yaml
   - auth.yaml
   - frontend.yaml
+  - sim.yaml
   - ingress.yaml
 generatorOptions:
   disableNameSuffixHash: true

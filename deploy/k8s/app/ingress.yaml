@@ -1,4 +1,5 @@
-# https://chaindeal.localhost — UI from nginx, /api from the node pool,
+# https://chaindeal.localhost — UI from nginx, /api and the gRPC LedgerService
+# from the node pool,
 # /oauth and /.well-known from the identity service.
 # (*.localhost resolves to 127.0.0.1 with no DNS setup: RFC 6761.)
 apiVersion: networking.k8s.io/v1
@@ -23,6 +24,13 @@ spec:
           - path: /.well-known
             pathType: Prefix
             backend: { service: { name: auth, port: { number: 8080 } } }
+          # gRPC LedgerService: gRPC-Web from browsers, native gRPC (HTTP/2) from tools.
+          - path: /chaindeal.v1.LedgerService
+            pathType: Prefix
+            backend: { service: { name: backend-grpc, port: { number: 9090 } } }
+          - path: /grpc.reflection.v1.ServerReflection
+            pathType: Prefix
+            backend: { service: { name: backend-grpc, port: { number: 9090 } } }
           - path: /api
             pathType: Prefix
             backend: { service: { name: backend, port: { number: 8080 } } }
@@ -38,6 +46,13 @@ spec:
           - path: /.well-known
             pathType: Prefix
             backend: { service: { name: auth, port: { number: 8080 } } }
+          # gRPC LedgerService: gRPC-Web from browsers, native gRPC (HTTP/2) from tools.
+          - path: /chaindeal.v1.LedgerService
+            pathType: Prefix
+            backend: { service: { name: backend-grpc, port: { number: 9090 } } }
+          - path: /grpc.reflection.v1.ServerReflection
+            pathType: Prefix
+            backend: { service: { name: backend-grpc, port: { number: 9090 } } }
           - path: /api
             pathType: Prefix
             backend: { service: { name: backend, port: { number: 8080 } } }

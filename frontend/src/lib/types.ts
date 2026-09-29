@@ -146,6 +146,8 @@ export interface SimSnapshot {
   config: SimConfig;
   /** Node currently holding the producer lease. */
   leader?: string | null;
+  /** The simulator service instance currently active (chaindeal-sim pod). */
+  runner?: string | null;
   /** Who may change the simulator ("operator" when authorization is on). */
   control_role?: string;
   agents: number;

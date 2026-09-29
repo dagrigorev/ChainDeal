@@ -1,8 +1,9 @@
 # Zero-trust networking inside the namespace: nothing is reachable unless
 # listed here.
 #   ingress controller  → frontend, backend, auth (8080)
-#   backend             → auth (8080, JWKS only needs this)
-#   backend, bulk job   → tarantool (3301)
+#   ingress, sim        → backend gRPC (9090: LedgerService, gRPC-Web + gRPC)
+#   backend, sim        → auth (8080: JWKS; token endpoint for the sim client)
+#   backend, sim, bulk  → tarantool (3301)
 #   tarantool           ↔ tarantool (replication)
 #   auth                → auth-db (3301) — nothing else can reach identity data
 apiVersion: networking.k8s.io/v1
@@ -33,7 +34,20 @@ spec:
   ingress:
     - from:
         - podSelector: { matchLabels: { app: backend } }
+        - podSelector: { matchLabels: { app: chaindeal-sim } }
       ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: ledger-grpc }
+spec:
+  podSelector: { matchLabels: { app: backend } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress } }
+        - podSelector: { matchLabels: { app: chaindeal-sim } }
+      ports: [{ port: 9090 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -44,6 +58,7 @@ spec:
   ingress:
     - from:
         - podSelector: { matchLabels: { app: backend } }
+        - podSelector: { matchLabels: { app: chaindeal-sim } }
         - podSelector: { matchLabels: { app: chaindeal-bulk } }
         - podSelector: { matchLabels: { app: tarantool } }
       ports: [{ port: 3301 }]
