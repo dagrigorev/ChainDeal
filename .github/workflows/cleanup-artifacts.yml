@@ -1,0 +1,70 @@
+# Deletes old build artifacts so storage holds only recent builds.
+#
+# Policy, per artifact name (e.g. chaindeal-web):
+#   - keep the newest KEEP artifacts from main, and the newest one of each other branch;
+#   - delete everything else, and anything older than MAX_AGE_DAYS.
+# Runs after every CI run, daily, and on demand (with a dry-run option).
+name: Clean up artifacts
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted, without deleting
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+
+concurrency:
+  group: cleanup-artifacts
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          KEEP: '3'
+          MAX_AGE_DAYS: '7'
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        with:
+          script: |
+            const keep = Number(process.env.KEEP);
+            const maxAgeMs = Number(process.env.MAX_AGE_DAYS) * 86_400_000;
+            const dryRun = process.env.DRY_RUN === 'true';
+            const { owner, repo } = context.repo;
+
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, { owner, repo, per_page: 100 });
+            const live = artifacts.filter((a) => !a.expired);
+            // Newest first, grouped by artifact name and branch.
+            live.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const seen = new Map();
+            const doomed = [];
+            for (const a of live) {
+              const branch = a.workflow_run?.head_branch ?? '?';
+              const key = `${a.name}@${branch}`;
+              const n = (seen.get(key) ?? 0) + 1;
+              seen.set(key, n);
+              const limit = branch === 'main' ? keep : 1;
+              const tooOld = Date.now() - new Date(a.created_at).getTime() > maxAgeMs;
+              if (n > limit || tooOld) doomed.push({ a, why: tooOld ? `older than ${process.env.MAX_AGE_DAYS} days` : `beyond newest ${limit} on ${branch}` });
+            }
+
+            let freed = 0;
+            for (const { a, why } of doomed) {
+              core.info(`${dryRun ? '[dry run] would delete' : 'delete'} ${a.name} #${a.id} (${a.workflow_run?.head_branch}, ${a.created_at}, ${(a.size_in_bytes / 2 ** 20).toFixed(1)} MiB): ${why}`);
+              if (!dryRun) await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: a.id });
+              freed += a.size_in_bytes;
+            }
+            const summary = `${dryRun ? 'Would delete' : 'Deleted'} ${doomed.length} of ${live.length} artifacts (${(freed / 2 ** 20).toFixed(1)} MiB); kept ${live.length - doomed.length}.`;
+            core.info(summary);
+            await core.summary.addHeading('Artifact cleanup').addRaw(summary).write();

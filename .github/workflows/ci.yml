@@ -1,0 +1,152 @@
+# Build and test on every pull request and every push to main.
+#
+#   rust    clippy (native + wasm32, warnings are errors), unit tests,
+#           release binaries → artifact
+#   web     WASM wallet, proto lint + generated-code drift, type check,
+#           production build → artifact
+#   images  the three Docker images (backend, auth, frontend), build only
+#
+# Artifacts are kept 7 days; cleanup-artifacts.yml prunes older ones.
+# The live-cluster suites (make auth-test / grpc-test) need Kubernetes and
+# run locally.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per branch/PR; a newer push cancels the older run (not on main).
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust · clippy, tests, release build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main writes the cache; PRs read it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy (backend, auth, core)
+        run: cargo clippy --workspace --exclude chaindeal-wallet --all-targets -- -D warnings
+      - name: Clippy (wallet, wasm32)
+        run: cargo clippy -p chaindeal-wallet --target wasm32-unknown-unknown -- -D warnings
+      - name: Unit tests
+        run: cargo test --workspace --exclude chaindeal-wallet
+
+      - name: Release build
+        run: cargo build --release -p chaindeal-backend --bins -p chaindeal-auth
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          cp target/release/chaindeal-{backend,sim,bulk,auth} dist/
+          (cd dist && sha256sum chaindeal-* > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chaindeal-binaries-linux-x86_64
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  web:
+    name: Web · WASM, proto, type check, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the WASM wallet
+        run: wasm-pack build ../crates/wallet-wasm --target web --release --out-dir ../../frontend/src/wasm --out-name chaindeal_wallet
+      - run: npm ci
+
+      - name: Lint the gRPC contract
+        run: npx buf lint ../proto
+      - name: Generated gRPC client is up to date
+        run: |
+          npm run proto
+          git diff --exit-code -- src/gen || { echo "::error::frontend/src/gen is stale: run 'make proto' and commit"; exit 1; }
+
+      - name: Type check and production build
+        run: npm run build
+      - name: Scripts parse
+        run: for f in scripts/*.mjs ../scripts/*.mjs; do node --check "$f"; done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chaindeal-web
+          path: frontend/dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  images:
+    name: Docker images
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # All three targets share the Rust build stage: build them in one job
+      # so it is compiled once, with layers cached between runs.
+      - name: backend (node, simulator, bulk loader)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: backend
+          tags: chaindeal-backend:ci
+          push: false
+          cache-from: type=gha,scope=chaindeal
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=chaindeal,mode=max' || '' }}
+      - name: auth
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: auth
+          tags: chaindeal-auth:ci
+          push: false
+          cache-from: type=gha,scope=chaindeal
+      - name: frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: frontend
+          tags: chaindeal-frontend:ci
+          push: false
+          cache-from: type=gha,scope=chaindeal
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=chaindeal,mode=max' || '' }}
