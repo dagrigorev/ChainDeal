@@ -629,6 +629,22 @@ Identity API (`/oauth`, `/.well-known`, served by the auth service):
 - **`make seed`** is also an end-to-end test of the contract and the machine OAuth client.
 - **Verify entire chain** on the Ledger page re-derives every hash, link, Merkle root and signature.
 
+### Continuous integration
+
+[![CI](https://github.com/dagrigorev/ChainDeal/actions/workflows/ci.yml/badge.svg)](https://github.com/dagrigorev/ChainDeal/actions/workflows/ci.yml)
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every pull request and every push to `main`. It has three parallel jobs:
+
+| Job | What it checks and builds | Artifact |
+|---|---|---|
+| **Rust** | `clippy -D warnings` for the native crates and for the wallet on `wasm32`, all unit tests, release build | `chaindeal-binaries-linux-x86_64`: backend, sim, bulk, auth + `SHA256SUMS` |
+| **Web** | Builds the WASM wallet, `buf lint` on `proto/`, fails if `frontend/src/gen` is stale, type check, production build, script syntax | `chaindeal-web`: the built UI |
+| **Docker images** | Builds the backend, auth and frontend images (not pushed), sharing one Rust build stage | — |
+
+- **Speed.** Cargo and Docker layers are cached, and only `main` writes the caches, so a pull request can't poison them. A newer push to a branch cancels its older run.
+- **Old artifacts are deleted.** Artifacts expire after 7 days. [cleanup-artifacts.yml](.github/workflows/cleanup-artifacts.yml) also prunes them after every CI run and daily. It keeps the newest 3 per artifact from `main` and the newest one per other branch, and deletes the rest. Run it by hand (**Actions → Clean up artifacts → Run workflow**) with **dry run** to preview.
+- The live-cluster suites (`make auth-test`, `make grpc-test`) need the Kubernetes deployment, so they run locally.
+
 ---
 
 ## Limitations
